@@ -1,249 +1,221 @@
-# Metered Inference Payments: a Protocol Design
+# Furthering L402 for Metered Inference
 
 Status: design exploration
 Related: [`l402-walletdk-inference-payments.md`](./l402-walletdk-inference-payments.md)
-Prior art: L402 (macaroon) · [`draft-lightning-session-00`](https://datatracker.ietf.org/doc/draft-lightning-session/) (Lightspark) on the `Payment` HTTP-auth scheme ([`draft-ryan-httpauth-payment`](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/))
+Compared against: the **Machine Payment Protocol** (MPP) — the `Payment`
+HTTP-auth scheme and its `session` intent ([`draft-lightning-session-00`](https://datatracker.ietf.org/doc/draft-lightning-session/), Lightspark)
 
-## 0. The reframing
+## 0. Premise
 
-An earlier version of this doc extended L402 by bolting bespoke fields onto HTTP
-headers (`price_per_1m_tokens_msat`, `X-L402-Tokens-Remaining`, …). **That was
-the wrong instinct.** Headers are a flat, weakly-typed, hard-to-version namespace;
-smearing application semantics across them repeats the mistakes HTTP itself spent
-two decades walking back.
+The goal is to **further L402**, not to replace it. L402's two primitives — the
+**macaroon** (an attenuatable, offline-verifiable authorization credential) and
+the **payment preimage** (the atomic proof of settlement) — are the right
+foundation. What L402 lacks is an *economic model* for metered, streaming
+services like LLM inference, where per-request cost is unknown upfront and a full
+Lightning round-trip per call is too slow.
 
-The right move — and the direction the ecosystem is already taking — is to carry
-**one structured, versioned, canonically-encoded JSON document** as the payment
-credential, and keep HTTP headers as a thin envelope. The emerging `Payment` HTTP
-authentication scheme and its `session` intent do exactly this:
+MPP's `session` intent solves that economic model well (prepaid deposit → per-unit
+draw-down → top-up → refund-on-close, streaming-native). But it does so by
+**throwing away the macaroon** and using the deposit preimage directly as a
+bearer token. We take the opposite path: **keep the macaroon and the preimage,
+and bring the session economics into L402.**
 
-- `WWW-Authenticate: Payment id=… method="lightning" intent="session" request="<base64url(JCS-JSON)>"`
-- `Authorization: Payment <base64url(JCS-JSON credential)>`
-- `Payment-Receipt: <base64url(JCS-JSON receipt)>`
+An earlier draft of this doc got two things wrong, now corrected:
+- It framed "preimage as a re-sent secret" as a weakness. It is not — see §1.
+- It proposed adopting MPP wholesale. We are extending L402 instead — see §3.
 
-where the JSON blobs carry all the semantics (`{action, preimage, returnInvoice, …}`),
-canonicalized with JCS ([RFC 8785]) so they can be digested/signed, and
-**"implementations MUST ignore unknown fields"** for forward-compatibility.
+## 1. L402's atomic core (what we must preserve)
 
-So this doc is now: **adopt the structured-payload model, and improve on the
-`session` intent where it is architecturally weak.** Not a parallel L402 v2 — an
-alignment with the standard plus a set of principled extensions we would
-contribute upstream.
+The macaroon identifier commits to a payment hash `H`. The service mints the
+macaroon alongside an invoice for `H`; paying the invoice reveals the preimage
+`r` with `sha256(r) = H`; the client presents `macaroon:r`, and the server checks
+`sha256(r) = H` against the `H` baked into the macaroon.
 
-## 1. What the `session` intent gets right (adopt wholesale)
+The consequence is L402's defining invariant:
 
-- **`method` × `intent` two-axis extensibility.** `lightning` × {`charge`,
-  `session`, …}. Clean, negotiable, open-ended — far better than L402's
-  "everything is a macaroon caveat."
-- **Structured payload, not headers.** All app semantics live in the JCS-JSON
-  blob. This is the core thing we were missing.
-- **Prepaid deposit → per-unit draw-down → topUp → close-with-refund.** The right
-  economic shape for token metering where per-request cost is unknown upfront.
-- **Refund of unspent balance** via a client-supplied amountless return invoice.
-- **Streaming-native:** SSE `payment-need-topup` / hold-connection / resume, and
-  a per-chunk `amount`. Payment latency is hidden by holding the stream.
-- **RFC 9457 problem+json** errors, **idempotency keyed by challenge id**, and
-  **JCS canonicalization** for signable bytes.
+> **A valid credential cannot exist without settlement, and settlement reveals
+> exactly the secret that validates the credential.**
 
-We should implement this and interoperate with it. It is a good protocol.
+This is not incidental — it *is* how Lightning works, and it is the whole reason
+L402 is trustless in-band. The preimage being "a secret you re-send" is a feature:
+it is the same secret that proves you paid. Any extension **MUST preserve this
+atomic binding.** We keep it.
 
-## 2. Where it is weak — and how we do better
+### The one real shift metering forces
 
-Read as an internet architect: the `session` intent optimizes for "ship a working
-prepaid meter on BOLT11," and in doing so makes a handful of choices that a
-protocol meant to last would not. Each is an opportunity.
+Prepaid metering unavoidably relaxes atomicity from **per-request** to
+**per-deposit**. In classic L402, one payment ↔ one credential ↔ (effectively)
+one unit of access. In a session, one *deposit* payment anchors many subsequent
+requests drawn down *on credit*. The deposit and each top-up remain atomically
+proven by their preimages; the individual metered requests are not.
 
-### 2.1 The bearer preimage is a payment secret reused as an auth secret
+That relaxation is the point of prepaid metering, but it opens an accountability
+gap: the server now counts consumption unilaterally. §2.1 closes that gap. This
+is the crux of furthering L402 for streaming — **anchor value with preimages as
+today, and make the now-trusted draw-down verifiable.**
 
-The session draft uses the **deposit preimage directly as a bearer token**,
-re-sent on every request, justified by "HMAC would require storing the preimage."
+## 2. What to add to L402 (and where MPP informs us)
 
-Two problems:
-1. **Layering violation.** The preimage is the *Lightning payment layer's* proof.
-   Overloading it as the *application auth layer's* long-lived credential couples
-   the two: leak it (a TLS-terminating proxy, a log line, a compromised
-   middlebox) and you lose payment proof *and* session control at once.
-2. **Static replayable secret.** A bearer token on every request is precisely the
-   web-auth anti-pattern OAuth spent a decade retreating from (bearer → DPoP /
-   mTLS proof-of-possession).
+### 2.1 Verifiable metering — the necessary complement to per-deposit atomicity
 
-**Our design: proof-of-possession, not bearer.** At `open`, the client registers
-a **session public key** (freshly generated). Each subsequent request carries a
-short signature over `(challenge_id, request_digest, seq)` — a DPoP-style proof.
-The server stores only the *public* key. The preimage never leaves the client
-after `open`; a captured request is not replayable and cannot drain the session.
-The draft's stated objection ("server must store the preimage") is a false
-tradeoff — you store a public key, not a secret. This is a *capability with
-proof-of-possession* rather than a *bearer token*, the distinction the object-
-capability and web-auth communities both converged on.
+Because draw-down is no longer atomic with payment, the server's `spent` counter
+is trusted. MPP leaves this trusted (its `payment-receipt` SSE event is
+informational). We can do better, and we should, precisely because we gave up
+per-request atomicity:
 
-### 2.2 Metering is server-trusted, with no verifiable receipt
+- The server signs a **monotonic usage receipt** `{session_id, seq,
+  cumulative_spent, cumulative_units, ts}` under a published key, per chunk or on
+  a periodic tick.
+- The client verifies monotonicity and retains the chain as non-repudiable
+  evidence of what it was charged for.
 
-The session model trusts the server's `spent` counter absolutely. The
-`payment-receipt` SSE event is informational — nothing stops a server from
-over-counting tokens, and the client cannot prove it was cheated.
+Signed receipts restore accountability for the credit-based portion of the flow
+that the preimage no longer covers. This is not a critique of MPP so much as the
+missing half of any prepaid meter.
 
-**Our design: signed, monotonic usage receipts.** The server signs a running
-`{session_id, seq, cumulative_spent, cumulative_units, ts}` — either per chunk or
-on a periodic tick — under a published key. The client verifies monotonicity and
-retains the chain as non-repudiable evidence. Cheating becomes *detectable and
-adjudicable* rather than a matter of trust. A protocol worth standardizing makes
-misbehavior provable; the session draft leaves this as an open question, and we
-should close it.
+### 2.2 Optional proof-of-possession for the session lifetime (hardening, not replacement)
 
-### 2.3 The refund is server goodwill
+The preimage stays the atomic proof-of-payment. The *only* new exposure metering
+introduces is that the deposit preimage is presented on **many** requests over a
+long-lived session, not once. As optional defense-in-depth — and to authorize
+async top-ups without re-revealing the deposit preimage on a side channel — the
+macaroon can carry a caveat committing to a client **session public key**
+registered at open; steady-state requests add a short signature over
+`(challenge, request_digest, seq)`.
 
-On `close`, the server unilaterally computes `refund = deposit − spent` and
-*best-effort* pays the return invoice; `refundStatus:"failed"` leaves the client
-with no recourse and no funds. The client trusts the server on both the count and
-the payout.
+This does not replace the preimage — it rides alongside it as an attenuation
+caveat, exactly the kind of thing macaroons are for. It is opt-in via capability
+negotiation (§2.5); wallets that just present `macaroon:preimage` keep working.
+(The sign layer is a fine addition; it is simply not load-bearing for atomicity.)
 
-**Our design: an HTLC/VHTLC-native deposit — and this is where our stack wins.**
-walletdk deposits via an **Ark VHTLC**, which already has a client refund/timeout
-branch. Structuring the deposit so unspent value is reclaimable by the client's
-own key on a timeout (rather than paid back by server grace) removes the refund
-trust entirely. Plain BOLT11 (the session draft's only rail) *cannot* express
-this; our swap/HTLC-native wallet *can*. The prepaid-balance-with-refund model
-becomes a genuine escrow with a client exit, not an IOU.
+### 2.3 Trust-minimized refund — where our stack beats BOLT11
 
-### 2.4 The payment flow is coupled to the data connection
+On `close`, MPP has the server unilaterally compute `refund = deposit − spent`
+and *best-effort* pay a client return invoice; a failed refund leaves the client
+with no recourse. Plain BOLT11 cannot express anything better.
 
-topUp is still an HTTP `402` round-trip; the SSE stream *stalls and is held open*
-while the client pays (seconds on an Ark↔LN swap). Clever, but it welds the
-payment plane onto the data plane — the stream's liveness now depends on payment
-latency, and the server must babysit a paused connection with in-flight upstream
-state.
+Our stack can: walletdk deposits via an **Ark VHTLC**, which already carries a
+client refund/timeout branch. Shaping the deposit so unspent value is reclaimable
+by the client's own key on a timeout turns the prepaid balance into real escrow
+with a client exit, rather than an IOU. This is a concrete reason L402-on-Ark can
+surpass a BOLT11-only session intent.
 
-**Our design: separate the control/payment plane from the data plane** — the
-classic internet move (FTP control vs data, SIP vs RTP, RTSP vs RTP). The data
-stream reads a balance and never blocks; top-ups flow on an **independent
-asynchronous payment channel** (Section 3). The HTTP side degrades to "is there
-credit?" and the payment side runs entirely out of band. This is the user's
-"payments channel alongside the data channel," made literal.
+### 2.4 Separate the payment plane from the data plane
 
-### 2.5 The client must echo the challenge params
+MPP's top-up is an inline HTTP `402`; the SSE stream stalls and is held open while
+the client pays (seconds on an Ark↔LN swap). That welds payment latency to stream
+liveness. The durable design separates the two planes — the classic internet move
+(FTP control vs data, SIP vs RTP): the HTTP data stream only reads a balance, and
+top-ups flow on an **independent asynchronous payment channel** (§4). The preimage
+still anchors each top-up; it just does so off the request path.
 
-The credential must carry `challenge = { id, realm, method, intent, request, expires }`
-echoed verbatim from the server. Making the client faithfully reconstruct server
-state is a reliable source of binding bugs.
+### 2.5 Capability negotiation + structured, macaroon-bound payloads
 
-**Our design: an opaque, server-authenticated challenge token.** The server issues
-a single signed/MAC'd token; the client presents it back verbatim alongside its
-proof, and never parses or reassembles it. "Don't make the client rebuild server
-state" — the same reason cookies and macaroons are opaque to the bearer.
+Two extensibility upgrades, both L402-native:
 
-### 2.6 A fixed feature matrix, no negotiation
+- **Negotiate capabilities** in the challenge: supported top-up rails
+  (`bolt11`, `bolt12`, `keysend`), whether PoP and signed receipts are offered,
+  pricing granularity. Client selects; both sides evolve independently.
+- **Carry a structured JSON session descriptor, bound to the macaroon.** MPP's
+  best idea is the structured `base64url(JCS-JSON)` payload instead of ad-hoc
+  headers. We adopt the *encoding* but keep macaroon integrity: put the JSON
+  descriptor (pricing, model, unit type, session params) in the challenge, and
+  commit the macaroon to it with a caveat `session_descriptor_sha256=<hash>`. The
+  macaroon stays the authenticated, attenuatable credential; the JSON gives us a
+  versioned, forward-compatible ("ignore unknown fields") extension surface
+  without smearing app semantics across HTTP headers.
 
-Whether streaming, invoice-topUp, or signed receipts are available is implicit.
-An architecture that lasts negotiates capabilities (TLS extensions, HTTP content
-negotiation) rather than hardcoding them.
+Note the macaroon is already the "opaque server-issued token" MPP has to
+reconstruct by echoing challenge params — L402 gets that right for free; the
+client presents the macaroon verbatim and never rebuilds server state.
 
-**Our design: capability advertisement in the challenge.** The challenge payload
-lists supported intents, top-up rails (`bolt11`, `bolt12`, `keysend`), whether
-proof-of-possession and signed receipts are offered, and pricing granularity. The
-client selects; both sides evolve independently.
+### 2.6 Normative schemas + test vectors
 
-### 2.7 Spec/example drift → normative schemas + test vectors
+MPP's own example decodes `currency:"BTC"` while its prose mandates `"sat"` —
+prose-defined wire formats drift. Ship normative JSON Schemas and canonical test
+vectors (challenge, each caveat/action, receipt, signature inputs) with the L402
+extension so the format is machine-checkable.
 
-The draft's own example decodes `currency:"BTC"` while the prose mandates `"sat"`.
-Small, but telling: prose-defined wire formats drift. We ship **normative JSON
-Schemas and canonical test vectors** (challenge, each credential action, receipt,
-signature inputs) as part of the spec — the IETF-quality practice the draft lacks.
+## 3. Why keep the macaroon (vs MPP's bearer preimage)
 
-## 3. The network plane: BOLT12 as the payment substrate (the Layer-4 point)
+MPP drops the macaroon and authenticates with the raw preimage. That is simpler,
+but it forfeits exactly what makes L402 worth furthering:
 
-Decoupling payment from the data connection (2.4) needs a place for the payment
-plane to *live*. **BOLT12 is that substrate**, and it is the network-level
-communication system the earlier draft's "Layer 4" gestured at:
+- **Attenuation.** Caveats let a holder narrow a credential (scope to a model, a
+  budget, an expiry) without the root key — impossible with a bare preimage.
+- **Delegation.** A funded session credential can be handed to a sub-agent with
+  tightened caveats. This matters for agentic/multi-agent inference.
+- **Offline, stateless verification.** The macaroon's HMAC chain verifies against
+  a root key without a per-request DB round-trip for authorization.
+- **A home for extensions.** Session descriptor binding (§2.5), PoP keys (§2.2),
+  and future third-party caveats all live as caveats — a single, versioned
+  extension vehicle. MPP has to grow new JSON fields; L402 grows caveats *and* can
+  bind JSON.
 
-- **A BOLT12 offer is a stable, reusable payment endpoint** — effectively the
-  service's network-level payment address. No per-session invoice issuance
-  round-trip over HTTP; the offer *is* the address.
-- **`invoice_request` carries a payer payload** (`invreq_payer_note` and custom
-  onion TLV records), so a top-up can carry `{session_id, units}` natively at the
-  Lightning layer — the "extra payloads in the onion" idea, standardized.
-- **Recurrence / repeated fetch** against one offer gives many top-ups from one
-  endpoint, no fresh challenge each time.
+So the macaroon is not legacy baggage — it is the extensibility substrate. We keep
+it and let the preimage do what it does best: atomically anchor each payment.
 
-So the mature architecture is: **HTTP is the pure data plane** (stream tokens,
-read balance, present proof-of-possession); **BOLT12 is the payment plane** (the
-offer is the endpoint, top-ups are invoice_requests tagged with the session id).
-keysend + AMP are the alternative async rail where BOLT12 isn't available. The
-`session`/HTTP `402` topUp becomes the *fallback* rail for wallets that only speak
-BOLT11 — which is where walletdk starts today.
+## 4. The network payment plane: BOLT12
 
-## 4. Rollout, grounded in what walletdk can pay
+Separating the payment plane (§2.4) needs somewhere for payments to live off the
+HTTP path. **BOLT12** is that substrate:
+
+- A **BOLT12 offer is a stable, reusable payment endpoint** — the service's
+  network-level payment address. No per-top-up invoice round-trip over HTTP.
+- `invoice_request` carries a **payer payload** (`invreq_payer_note` / custom
+  onion TLV), so a top-up natively carries `{session_id, units}` at the Lightning
+  layer.
+- One offer serves many top-ups; each still yields a preimage that atomically
+  proves that increment and binds to the session.
+
+Mature shape: **HTTP is the data plane** (stream tokens, read balance, present
+`macaroon` + optional PoP); **BOLT12 is the payment plane** (offer = endpoint,
+top-ups = invoice_requests tagged with the session). keysend + AMP are the
+alternative async rail; inline BOLT11 `402` top-up is the fallback for BOLT11-only
+wallets — which is where walletdk starts.
+
+## 5. Rollout, grounded in what walletdk can pay
 
 | Phase | What | Rail | Wallet-payable now? |
 |---|---|---|---|
-| 0 | Implement the `session` intent as-is (interop with the standard) | BOLT11 | ✅ |
-| 1 | Add proof-of-possession session key + signed usage receipts (2.1, 2.2) — pure extension, both endpoints ours | BOLT11 | ✅ |
-| 2 | HTLC/VHTLC-native deposit with client refund branch (2.3) | Ark VHTLC | ⚠️ needs deposit-shape work in walletdk |
-| 3 | BOLT12 payment plane, control/data separation (2.4, 3) | BOLT12 / keysend | ❌ needs wallet BOLT12/spontaneous support |
+| 0 | L402 session extension: deposit-anchored macaroon + draw-down + top-up + refund, structured descriptor caveat | BOLT11 | ✅ |
+| 1 | Signed usage receipts + optional PoP caveat (§2.1, §2.2) — pure extension, both endpoints ours | BOLT11 | ✅ |
+| 2 | VHTLC-native deposit with client refund branch (§2.3) | Ark VHTLC | ⚠️ deposit-shape work in walletdk |
+| 3 | BOLT12 payment plane, control/data separation (§2.4, §4) | BOLT12 / keysend | ❌ needs wallet BOLT12/spontaneous |
 
-Phase 0 is interop and ships now. Phases 1–2 are our differentiators and need no
-new Lightning features — just a session keypair (client) and a signing key
-(proxy), plus shaping the Ark deposit. Phase 3 is the endgame once the wallet
-gains BOLT12.
+Phase 0 keeps L402's atomic core intact and adds the session economics on BOLT11
+(payable today). Phases 1–2 are our differentiators over MPP and need no new
+Lightning features — a signing key (proxy), an optional session key (client), and
+Ark deposit shaping. Phase 3 is the endgame once the wallet speaks BOLT12.
 
-## 5. The `metered-inference` profile (concrete additions)
+## 6. Concrete L402 additions (sketch)
 
-Rather than a new `method`, define our semantics as an **extension of the
-`session` intent** (or a sibling `metered-inference` intent), all inside the JSON
-payload so headers stay a thin envelope:
+**New caveats** (the extension surface, verified by satisfiers; unknown caveats
+are skipped per the L402 rule, so this is incrementally deployable):
+- `inference_session_id=<token_id>` — the metering key (reuses L402's stable
+  `token_id`).
+- `inference_token_budget=<n>` — purchased units (a ceiling; raising it means
+  re-mint under the same `token_id`, as L402 already does for tier upgrades).
+- `inference_model=<id>` — model scope.
+- `session_descriptor_sha256=<hash>` — binds the structured JSON descriptor.
+- `session_pubkey=<hex>` — optional PoP key (§2.2).
+- `inference_valid_until=<unix>` — reuse the timeout satisfier.
 
-**Challenge payload** (server → client), superset of the session `request`:
-```jsonc
-{
-  "intent": "session",
-  "capabilities": { "topup": ["bolt11", "bolt12"], "pop": true, "receipts": "signed" },
-  "pricing": { "unit": "token", "amount": "2", "currency": "sat", "granularity": 100000 },
-  "model": { "id": "glm-4.5", "context": 128000 },     // app metadata in the blob, NOT headers
-  "deposit": { "invoice": "lnbc…", "amountSat": "300", "paymentHash": "…" },
-  "offer": "lno…",                                      // BOLT12 offer for async top-ups (phase 3)
-  "challengeToken": "<opaque server-authenticated token>"  // client echoes verbatim (2.5)
-}
-```
-
-**Credential payload** (client → server): `open` also registers `sessionPubKey`
-and a `refundPath`; steady-state `invoke` replaces `bearer` and carries a
-`pop` signature instead of the raw preimage:
-```jsonc
-{ "challengeToken": "…",
-  "payload": { "action": "invoke", "sessionId": "…", "seq": 42,
-               "pop": "<sig over (challengeToken, requestDigest, seq) by sessionPubKey>" } }
-```
-
-**Receipt** (server → client): the session receipt plus a signed running total:
-```jsonc
-{ "method": "lightning", "reference": "<sessionId>", "status": "success",
-  "seq": 42, "cumulativeSpent": 202, "cumulativeUnits": 101,
-  "sig": "<server signature over the above>" }
-```
-
-Everything model-, price-, and capability-specific lives in the JSON document and
-is versioned by `intent` + `capabilities`, never in a header. New fields are
-additive under the ignore-unknown rule.
-
-## 6. Standardization posture
-
-Engage the standard, don't fork it. Implement `Payment` + `session` for interop;
-propose 2.1–2.7 upstream as **capability-negotiated extensions** to the session
-intent (proof-of-possession, signed receipts, negotiated top-up rails, opaque
-challenge token) and the HTLC-refund and BOLT12-plane work as new options. Ship
-JSON Schemas + test vectors with the reference implementation (our Go proxy and
-the pi-402 client) so the wire format is machine-checkable from day one.
+**Credential presentation:** `L402 <macaroon>:<preimage>` unchanged for the
+atomic anchor; steady-state metered requests additionally carry the JSON payload
+(action, seq, optional PoP signature) and, on settlement, receive a signed
+receipt (§2.1).
 
 ## 7. Open questions
 
-- **PoP key custody.** Where the session key lives (extension memory vs the
-  wallet) and its lifetime across reconnects.
-- **Receipt disputes.** What a signed-receipt discrepancy actually entitles the
-  client to — refund branch, reputation, on-chain evidence?
-- **VHTLC refund vs metering.** Reconciling an on-timeout client refund with the
-  server's mid-session spend; the interaction of Ark expiry with a long session.
-- **BOLT12 payload limits.** How much `{session_id, units}` context fits in
-  `invoice_request` / onion TLV, and privacy of tagging payments with a session.
-- **Intent vs profile.** Extend `session`, or register a distinct
-  `metered-inference` intent? Prefer the former for interop unless the semantics
-  diverge enough to warrant its own.
+- **Receipt disputes.** What a signed-receipt discrepancy entitles the client to
+  (refund branch, reputation, evidence) — signatures make cheating provable, but
+  the remedy is a policy question.
+- **VHTLC refund vs draw-down.** Reconciling an on-timeout client refund with the
+  server's mid-session spend; Ark expiry vs long sessions.
+- **BOLT12 payload + privacy.** How much session context fits in
+  `invoice_request`/onion TLV, and the linkability of tagging payments with a
+  session.
+- **Standardization.** Push these as L402 extensions (new caveats, session
+  descriptor binding), and align the descriptor JSON with MPP's schema where it
+  helps interop — without giving up the macaroon.

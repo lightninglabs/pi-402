@@ -83,7 +83,7 @@ local `aperture-ts` checkout.
 ## Docs
 
 - [`docs/l402-walletdk-inference-payments.md`](docs/l402-walletdk-inference-payments.md) — end-to-end design of the extension.
-- [`docs/l402-protocol-extensions.md`](docs/l402-protocol-extensions.md) — a protocol design for metered / streaming inference payments: adopting the structured-payload `Payment`/`session` HTTP-auth model and improving on it (proof-of-possession, verifiable receipts, HTLC-native refunds, a BOLT12 payment plane).
+- [`docs/l402-protocol-extensions.md`](docs/l402-protocol-extensions.md) — furthering L402 for metered / streaming inference: keep the macaroon + preimage atomic core, add the session economic model (verifiable receipts, HTLC-native refunds, a BOLT12 payment plane), informed by the Machine Payment Protocol.
 
 ## License
 
