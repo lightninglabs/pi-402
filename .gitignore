@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.pi/
+# Vendored walletdk WASM artifacts (built out of band).
+src/wasm/walletdk.wasm
+src/wasm/wasm_exec.js
