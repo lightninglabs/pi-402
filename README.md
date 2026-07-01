@@ -36,13 +36,15 @@ wallet, caches the L402 token, and retries — transparently, streaming included
 
 ## Install
 
-```bash
-# Run Pi with the extension directly:
-pi -e /path/to/pi-402
+The quickest path (Pi's package manager clones, installs deps, and auto-loads):
 
-# Or drop it into your extensions directory for auto-discovery:
-cp -r pi-402 ~/.pi/agent/extensions/
+```bash
+pi install git:github.com/lightninglabs/pi-402
 ```
+
+See [INSTALL.md](INSTALL.md) for all install methods (managed package,
+auto-discovered directory, per-run `-e` flag), dependency linking during early
+development, and the mock-payer verification path.
 
 Then select the paid model and prompt:
 
