@@ -23,18 +23,25 @@ model provider backed by an embedded walletdk wallet.
 
 ## Invariants
 
-- `streamSimple` owns the whole request path — payment is injected here, nowhere
-  in Pi core.
+- `streamSimple` owns the whole request path; payment is injected here, nowhere
+  in Pi core. The OpenAI client sets `maxRetries: 0` so the paying fetch owns
+  retry semantics and the SDK never re-enters it to double-pay.
 - The token cache is per provider instance, so paid tokens are reused until
   expiry and retries never re-pay.
-- The budget policy runs before any wallet action.
+- The budget policy runs before any wallet action, and the wallet re-asserts the
+  per-request ceiling on the *quoted total outflow* (invoice principal plus swap
+  fee) after `prepareSend`, before dispatching `send`/`sendPrepared`.
 
 ## Status / TODO
 
 - `provider.ts` handles the text streaming path only; tool calls, reasoning, and
-  usage mapping are milestone-2 work (mirror `custom-provider-anthropic`).
-- `wallet.ts` `startAndUnlock` / `awaitPreimage` are stubs; the real WASM load
-  and preimage read depend on
-  [darepo-client#835](https://github.com/lightninglabs/darepo-client/issues/835).
+  usage mapping beyond `finish_reason: length` are milestone-2 work (mirror
+  `custom-provider-anthropic`).
+- `wallet.ts` implements both backends: the sidecar HTTP/JSON gateway
+  (`PI402_WALLETD_GATEWAY`) and the embedded WASM bridge. Both run
+  `prepareSend` → open settle stream → `send`/`sendPrepared` → read preimage.
+  The preimage read still depends on
+  [darepo-client#835](https://github.com/lightninglabs/darepo-client/issues/835)
+  landing the preimage on the settled entry.
 - Run with `PI402_MOCK_PAYER=1` to exercise the loop against a mock proxy before
   the wallet is wired.

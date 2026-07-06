@@ -5,17 +5,20 @@ ways — a managed package (`pi install`), an auto-discovered directory, or a
 per-run flag — and pi-402 works with all three. No Pi fork or core patch is
 required.
 
-> Status: early development. The real walletdk payer depends on
-> [darepo-client#835](https://github.com/lightninglabs/darepo-client/issues/835).
-> Run with `PI402_MOCK_PAYER=1` against a mock/dev proxy until it lands.
+> Status: early development. Real payments work end to end on regtest via the
+> darepod sidecar backend (`PI402_WALLETD_GATEWAY`); the in-process WASM
+> backend targets browser-like hosts. `PI402_MOCK_PAYER=1` remains the
+> no-Lightning dev path against a mock proxy.
 
 ## Prerequisites
 
 - **Pi** installed (`pi --version`), Node.js **>= 22.19**.
 - An **L402 proxy URL** fronting your model (see the aperture-based Go proxy in
   the design doc). For local testing, a mock proxy plus `PI402_MOCK_PAYER=1`.
-- For real payments: a **funded walletdk wallet** and a reachable swap server
-  (milestone work — not required for the mock path).
+- For real payments: a **funded walletdk wallet** and a reachable swap server.
+  On a Node host, run a darepod sidecar (built with the `walletdkrpc` tag in
+  darepo-client) and point `PI402_WALLETD_GATEWAY` at its HTTP/JSON gateway;
+  see `dev/regtest/README.md` for the full regtest stack.
 
 ## Option 1 — `pi install` (recommended)
 
@@ -133,10 +136,12 @@ Wallet commands (registered by the extension):
 
 | Env var | Purpose |
 |---------|---------|
-| `L402_PROXY_URL` | Base URL of the L402 proxy fronting the model (default `http://localhost:8402`) |
+| `L402_PROXY_URL` | Base URL of the L402 proxy fronting the model, including the API prefix (default `http://localhost:8402`; against aperture use e.g. `http://localhost:8404/v1`) |
 | `PI402_MAX_SAT_PER_REQUEST` | Per-request spend ceiling |
 | `PI402_DAILY_CAP_SAT` | Daily spend ceiling |
 | `PI402_MOCK_PAYER` | Set to `1` to use the mock payer (no real Lightning) while developing |
+| `PI402_WALLETD_GATEWAY` | Sidecar mode: darepod `walletdkrpc` HTTP/JSON gateway (e.g. `http://localhost:10031`) |
+| `PI402_WALLET_PASSWORD` | Wallet password (created on first run) |
 
 ## Verify with the mock path
 
