@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { WalletService } from "./wallet.ts";
 
 // registerWalletCommands wires the /wallet, /deposit, and /balance slash
@@ -7,25 +7,26 @@ import type { WalletService } from "./wallet.ts";
 export function registerWalletCommands(pi: ExtensionAPI, wallet: WalletService): void {
 	pi.registerCommand("wallet", {
 		description: "Show the pi-402 wallet status and balance",
-		handler: async (ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const balance = await wallet.confirmedBalanceSat();
-			ctx.ui.setStatus?.(`pi-402 wallet: ${balance} sat`);
+			ctx.ui.setStatus("pi-402", `⚡ ${balance} sat`);
+			ctx.ui.notify(`pi-402 wallet: ${balance} sat confirmed`, "info");
 		},
 	});
 
 	pi.registerCommand("deposit", {
 		description: "Show an on-chain boarding address to fund the wallet",
-		handler: async (ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const address = await wallet.depositAddress();
-			ctx.sendMessage(`Fund your pi-402 wallet by sending on-chain funds to:\n\n${address}`);
+			ctx.ui.notify(`Fund your pi-402 wallet by sending on-chain funds to: ${address}`, "info");
 		},
 	});
 
 	pi.registerCommand("balance", {
 		description: "Show the confirmed wallet balance",
-		handler: async (ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const balance = await wallet.confirmedBalanceSat();
-			ctx.sendMessage(`Confirmed balance: ${balance} sat`);
+			ctx.ui.notify(`Confirmed balance: ${balance} sat`, "info");
 		},
 	});
 }

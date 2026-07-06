@@ -22,7 +22,11 @@ export class MockInvoicePayer implements InvoicePayer {
 // swap fee for the budget check), sendPrepared dispatches it, and the preimage
 // is read off the settled activity entry once the swap completes.
 export class WalletInvoicePayer implements InvoicePayer {
-	constructor(private readonly wallet: WalletService) {}
+	private readonly wallet: WalletService;
+
+	constructor(wallet: WalletService) {
+		this.wallet = wallet;
+	}
 
 	async payInvoice(input: PayInvoiceInput): Promise<{ preimageHex: string; amountPaidSat: number }> {
 		return this.wallet.payInvoice(input.invoice, input.amountSat);
