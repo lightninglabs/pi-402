@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { maxSatPerRequest } from "./policy.ts";
 
 // WalletService runs against one of two walletdk backends:
 //
@@ -19,6 +20,17 @@ interface SubscriptionHandle {
 	next(): Promise<any | null>;
 	close(): void;
 }
+
+// RestWalletStream is an open NDJSON SubscribeWallet stream against the sidecar
+// gateway: a reader plus a close hook that aborts the underlying request.
+interface RestWalletStream {
+	reader: ReadableStreamDefaultReader<Uint8Array>;
+	close(): void;
+}
+
+// DEFAULT_WALLET_PASSWORD is the throwaway password used on non-mainnet dev
+// networks. Mainnet refuses to start with it (resolveWalletPassword).
+const DEFAULT_WALLET_PASSWORD = "pi402-dev-password";
 
 export interface PayResult {
 	preimageHex: string;
@@ -45,16 +57,29 @@ export class WalletService {
 			return;
 		}
 
-		const password = process.env.PI402_WALLET_PASSWORD ?? "pi402-dev-password";
+		const password = resolveWalletPassword();
 
 		this.gateway = process.env.PI402_WALLETD_GATEWAY;
 		if (this.gateway) {
-			// Sidecar mode: the daemon is already running; just unlock.
-			const passwordB64 = Buffer.from(password).toString("base64");
-			try {
-				await this.rest("/v1/wallet/unlock", { wallet_password: passwordB64 });
-			} catch {
-				await this.rest("/v1/wallet/create", { wallet_password: passwordB64 });
+			// Sidecar mode: the daemon is already running. Only unlock (or
+			// create, on the very first run) when the wallet is not already
+			// usable; unlocking an unlocked wallet is an error. The status
+			// probe genuinely may fail if the daemon is down, so surface that
+			// rather than treating it as "not unlocked".
+			const status = await this.rest("/v1/wallet/status", {});
+			if (!status.unlocked) {
+				const passwordB64 = Buffer.from(password).toString("base64");
+				try {
+					await this.rest("/v1/wallet/unlock", { wallet_password: passwordB64 });
+				} catch (err) {
+					// Only create when unlock failed because no wallet exists
+					// yet. A wrong password or an unreachable daemon must not
+					// fall through to blindly creating a fresh wallet.
+					if (!isWalletMissingError(err)) {
+						throw err;
+					}
+					await this.rest("/v1/wallet/create", { wallet_password: passwordB64 });
+				}
 			}
 			this.ready = true;
 			return;
@@ -64,7 +89,13 @@ export class WalletService {
 		await this.call("start", startConfigFromEnv());
 		try {
 			await this.call("unlockWallet", { wallet_password: password });
-		} catch {
+		} catch (err) {
+			// As with the sidecar path, only create when the failure genuinely
+			// means the wallet does not exist yet; otherwise rethrow so a wrong
+			// password or a daemon fault is not masked by a fresh create.
+			if (!isWalletMissingError(err)) {
+				throw err;
+			}
 			await this.call("createWallet", { wallet_password: password });
 		}
 		this.ready = true;
@@ -74,25 +105,57 @@ export class WalletService {
 	// prepareSend quotes the payment (including the swap fee), send
 	// dispatches it, and the preimage is read from the settled entry once
 	// the swap completes (darepo-client#835).
-	async payInvoice(invoice: string, amountSat: number): Promise<PayResult> {
+	//
+	// The budget cap is re-asserted here, after the quote, on the QUOTED TOTAL
+	// OUTFLOW (invoice principal plus swap fee) rather than the counterparty's
+	// stated amount. The buyer policy runs earlier on the proxy's stated
+	// amountSat, but only the quote reveals the invoice's real encoded amount
+	// plus the swap fee the wallet will actually pay. We refuse before
+	// dispatching send if that total exceeds the per-request ceiling.
+	async payInvoice(invoice: string, _amountSat: number): Promise<PayResult> {
+		const ceiling = maxSatPerRequest();
+
 		if (this.gateway) {
 			const quote = await this.rest("/v1/wallet/prepare-send", { invoice });
-			await this.rest("/v1/wallet/send", { send_intent_id: quote.send_intent_id });
-			const preimageHex = await this.awaitPreimageRest(quote.payment_hash);
-			return {
-				preimageHex,
-				amountPaidSat: Number(quote.amount_sat) || amountSat,
-			};
+			const outflow = quotedOutflowSat(quote);
+			assertWithinCeiling(outflow, ceiling);
+
+			// Open the settle stream BEFORE dispatching the send. Subscribing
+			// after send relies on include_existing to replay the settle, and a
+			// missed settle would spin to the timeout and (with SDK retries
+			// disabled upstream) surface as a hard error rather than a second
+			// payment. Opening first closes that race.
+			const stream = await this.openWalletStreamRest();
+			try {
+				await this.rest("/v1/wallet/send", { send_intent_id: quote.send_intent_id });
+				const preimageHex = await this.readPreimageRest(stream, String(quote.payment_hash));
+				return {
+					preimageHex,
+					amountPaidSat: outflow,
+				};
+			} finally {
+				stream.close();
+			}
 		}
 
 		const call = this.requireCall();
 		const quote = await call("prepareSend", { invoice });
-		await call("sendPrepared", { send_intent_id: quote.SendIntentID });
-		const preimageHex = await this.awaitPreimageWasm(quote.PaymentHash);
-		return {
-			preimageHex,
-			amountPaidSat: quote.AmountSat || amountSat,
-		};
+		const outflow = quotedOutflowSat(quote);
+		assertWithinCeiling(outflow, ceiling);
+
+		// Same ordering as the sidecar path: subscribe before sendPrepared so a
+		// fast settle cannot be missed.
+		const handle: SubscriptionHandle = await call("subscribe", { include_existing: true });
+		try {
+			await call("sendPrepared", { send_intent_id: quote.SendIntentID });
+			const preimageHex = await this.readPreimageWasm(handle, String(quote.PaymentHash));
+			return {
+				preimageHex,
+				amountPaidSat: outflow,
+			};
+		} finally {
+			handle.close();
+		}
 	}
 
 	// confirmedBalanceSat returns the spendable wallet balance in sats.
@@ -114,79 +177,88 @@ export class WalletService {
 		return res.Address ?? res.address;
 	}
 
-	// awaitPreimageRest watches the gateway's SubscribeWallet NDJSON stream
-	// until the send for the given payment hash settles, then returns the
-	// preimage riding entry.progress.preimage (darepo-client#835).
-	private async awaitPreimageRest(paymentHash: string): Promise<string> {
+	// openWalletStreamRest opens the gateway's SubscribeWallet NDJSON stream. It
+	// is opened before the send is dispatched so the settle cannot be missed;
+	// the caller reads it via readPreimageRest and must close it.
+	private async openWalletStreamRest(): Promise<RestWalletStream> {
 		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), PREIMAGE_TIMEOUT_MS);
+		const res = await fetch(`${this.gateway}/v1/wallet/subscribe`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ include_existing: true }),
+			signal: controller.signal,
+		});
+		if (!res.ok || !res.body) {
+			controller.abort();
+			throw new Error(`subscribe failed: ${res.status}`);
+		}
+		return {
+			reader: res.body.getReader(),
+			close: () => controller.abort(),
+		};
+	}
 
+	// readPreimageRest reads the gateway's NDJSON WalletEntry stream until the
+	// send for the given payment hash settles, then returns the preimage riding
+	// entry.progress.preimage (darepo-client#835).
+	private async readPreimageRest(stream: RestWalletStream, paymentHash: string): Promise<string> {
+		// timedOut distinguishes our own deadline abort from any other read
+		// rejection, so the timeout surfaces as a descriptive error rather than
+		// a bare AbortError.
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			stream.close();
+		}, PREIMAGE_TIMEOUT_MS);
+
+		const { reader } = stream;
+		const decoder = new TextDecoder();
+		const framer = new NdjsonFramer();
 		try {
-			const res = await fetch(`${this.gateway}/v1/wallet/subscribe`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ include_existing: true }),
-				signal: controller.signal,
-			});
-			if (!res.ok || !res.body) {
-				throw new Error(`subscribe failed: ${res.status}`);
-			}
-
-			// The gateway frames server-streamed responses as
-			// newline-delimited JSON objects: {"result": <WalletEntry>}.
-			const reader = res.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = "";
 			for (;;) {
-				const { done, value } = await reader.read();
+				let chunk: ReadableStreamReadResult<Uint8Array>;
+				try {
+					chunk = await reader.read();
+				} catch (err) {
+					if (timedOut) {
+						throw new Error(`timed out waiting for preimage of ${paymentHash}`);
+					}
+					throw err;
+				}
+				const { done, value } = chunk;
 				if (done) {
 					throw new Error(`subscribe stream ended before preimage of ${paymentHash}`);
 				}
-				buffer += decoder.decode(value, { stream: true });
 
-				let newline = buffer.indexOf("\n");
-				while (newline >= 0) {
-					const line = buffer.slice(0, newline).trim();
-					buffer = buffer.slice(newline + 1);
-					newline = buffer.indexOf("\n");
-					if (!line) {
-						continue;
-					}
-
-					const frame = JSON.parse(line);
-					const entry = frame.result ?? frame;
-					const progress = entry.progress;
-					if (progress?.payment_hash !== paymentHash) {
-						continue;
-					}
-					if (entry.status === "ENTRY_STATUS_FAILED") {
-						throw new Error(`send failed: ${entry.failure_reason ?? "unknown"}`);
-					}
-					if (progress?.preimage) {
-						return progress.preimage;
+				for (const line of framer.push(decoder.decode(value, { stream: true }))) {
+					const preimage = preimageFromFrame(JSON.parse(line), paymentHash);
+					if (preimage !== undefined) {
+						return preimage;
 					}
 				}
 			}
 		} finally {
 			clearTimeout(timeout);
-			controller.abort();
 		}
 	}
 
-	// awaitPreimageWasm watches the WASM bridge's activity stream until the
-	// send for the given payment hash settles.
-	private async awaitPreimageWasm(paymentHash: string): Promise<string> {
-		const call = this.requireCall();
-		const handle: SubscriptionHandle = await call("subscribe", {
-			include_existing: true,
-		});
-
-		const timeout = setTimeout(() => handle.close(), PREIMAGE_TIMEOUT_MS);
+	// readPreimageWasm reads the WASM bridge's activity stream until the send
+	// for the given payment hash settles. The handle is opened by the caller
+	// before the send is dispatched, and closed by the caller.
+	private async readPreimageWasm(handle: SubscriptionHandle, paymentHash: string): Promise<string> {
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			handle.close();
+		}, PREIMAGE_TIMEOUT_MS);
 		try {
 			for (;;) {
 				const entry = await handle.next();
 				if (entry === null) {
-					throw new Error(`timed out waiting for preimage of ${paymentHash}`);
+					if (timedOut) {
+						throw new Error(`timed out waiting for preimage of ${paymentHash}`);
+					}
+					throw new Error(`subscribe stream ended before preimage of ${paymentHash}`);
 				}
 				if (entry.Progress?.PaymentHash !== paymentHash) {
 					continue;
@@ -200,7 +272,6 @@ export class WalletService {
 			}
 		} finally {
 			clearTimeout(timeout);
-			handle.close();
 		}
 	}
 
@@ -231,16 +302,142 @@ export class WalletService {
 // startConfigFromEnv builds the embedded WASM start config. Defaults target
 // the local regtest harness; production deployments override via env.
 function startConfigFromEnv(): Record<string, unknown> {
+	const network = process.env.PI402_NETWORK ?? "regtest";
+	const isMainnet = network === "mainnet";
+
+	// Insecure transport is a dev-harness affordance for the local regtest/
+	// testnet stack. On mainnet it would send funds over an unauthenticated,
+	// unencrypted channel, so gate it to non-mainnet networks only.
+	const insecure = !isMainnet;
+
 	return {
-		network: process.env.PI402_NETWORK ?? "regtest",
+		network,
 		data_dir: process.env.PI402_WALLET_DIR ?? "/darepo",
 		server_address: process.env.PI402_ARK_SERVER ?? "127.0.0.1:7070",
-		server_insecure: true,
+		server_insecure: insecure,
 		swap_server_address: process.env.PI402_SWAP_SERVER ?? "127.0.0.1:8082",
-		swap_server_insecure: true,
+		swap_server_insecure: insecure,
 		wallet_esplora_url: process.env.PI402_ESPLORA_URL ?? "http://127.0.0.1:3002",
-		allow_mainnet: (process.env.PI402_NETWORK ?? "regtest") === "mainnet",
+		allow_mainnet: isMainnet,
 	};
+}
+
+// resolveWalletPassword returns the wallet password from the environment. On
+// mainnet it refuses the built-in dev default: a real-money wallet fronted by an
+// unauthenticated local gateway must not ship with a public, hardcoded password.
+function resolveWalletPassword(): string {
+	const password = process.env.PI402_WALLET_PASSWORD ?? DEFAULT_WALLET_PASSWORD;
+	const isMainnet = (process.env.PI402_NETWORK ?? "regtest") === "mainnet";
+	if (isMainnet && password === DEFAULT_WALLET_PASSWORD) {
+		throw new Error(
+			"refusing to start a mainnet wallet with the default password; set PI402_WALLET_PASSWORD to a strong secret",
+		);
+	}
+	return password;
+}
+
+// quotedOutflowSat extracts the total sats the wallet will actually pay from a
+// prepare-send quote: the invoice principal plus any swap fee. The sidecar
+// gateway marshals proto JSON as snake_case; the WASM bridge marshals Go structs
+// as PascalCase. We accept either casing and prefer an explicit total-outflow
+// field when the backend provides one, falling back to principal plus fee.
+function quotedOutflowSat(quote: any): number {
+	const pick = (...keys: string[]): number => {
+		for (const key of keys) {
+			const value = Number(quote?.[key]);
+			if (Number.isFinite(value)) {
+				return value;
+			}
+		}
+		return 0;
+	};
+
+	const total = pick("expected_total_outflow_sat", "ExpectedTotalOutflowSat", "total_outflow_sat", "TotalOutflowSat");
+	if (total > 0) {
+		return total;
+	}
+
+	const principal = pick("amount_sat", "AmountSat");
+	const fee = pick("fee_sat", "FeeSat", "swap_fee_sat", "SwapFeeSat", "total_fee_sat", "TotalFeeSat");
+	return principal + fee;
+}
+
+// assertWithinCeiling refuses a quoted outflow that exceeds the per-request
+// spend ceiling. This honors the documented invariant that the budget is
+// asserted on the quoted total outflow, not the invoice face value.
+function assertWithinCeiling(outflowSat: number, ceilingSat: number): void {
+	if (!Number.isFinite(outflowSat) || outflowSat <= 0) {
+		throw new Error(`prepare-send returned an unusable quote (outflow ${outflowSat} sat)`);
+	}
+	if (outflowSat > ceilingSat) {
+		throw new Error(`quoted outflow ${outflowSat} sat exceeds per-request cap ${ceilingSat} sat`);
+	}
+}
+
+// NdjsonFramer reassembles newline-delimited JSON lines from a stream of text
+// chunks. A chunk may split a line mid-object, so partial content is held in the
+// buffer until its terminating newline arrives. Blank lines are dropped.
+export class NdjsonFramer {
+	private buffer = "";
+
+	// push feeds a decoded text chunk and returns the complete lines it
+	// completed. Any trailing partial line is retained for the next push.
+	push(chunk: string): string[] {
+		this.buffer += chunk;
+		const lines: string[] = [];
+		let newline = this.buffer.indexOf("\n");
+		while (newline >= 0) {
+			const line = this.buffer.slice(0, newline).trim();
+			this.buffer = this.buffer.slice(newline + 1);
+			newline = this.buffer.indexOf("\n");
+			if (line) {
+				lines.push(line);
+			}
+		}
+		return lines;
+	}
+}
+
+// preimageFromFrame classifies one decoded SubscribeWallet frame (sidecar
+// proto-JSON, snake_case). It returns the preimage once the entry for the given
+// payment hash settles, undefined for frames that are not yet terminal, and
+// throws on a gateway error frame or a failed send.
+export function preimageFromFrame(frame: any, paymentHash: string): string | undefined {
+	// A gateway-level error frame (e.g. {"error": {...}}) means the stream
+	// itself failed; fail fast instead of spinning to the timeout.
+	if (frame?.error) {
+		const detail = frame.error.message ?? JSON.stringify(frame.error);
+		throw new Error(`subscribe stream error: ${detail}`);
+	}
+	const entry = frame?.result ?? frame;
+	const progress = entry?.progress;
+	if (progress?.payment_hash !== paymentHash) {
+		return undefined;
+	}
+	if (entry.status === "ENTRY_STATUS_FAILED") {
+		throw new Error(`send failed: ${entry.failure_reason ?? "unknown"}`);
+	}
+	if (progress?.preimage) {
+		return progress.preimage;
+	}
+	return undefined;
+}
+
+// isWalletMissingError reports whether an unlock/status error means the wallet
+// simply does not exist yet (so creating one is the right recovery), as opposed
+// to a wrong password or an unreachable daemon, which must propagate. The
+// sidecar returns a gRPC-ish code/message; the WASM path an error string.
+function isWalletMissingError(err: unknown): boolean {
+	const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+	// gRPC NotFound is code 5; the message wording covers both backends.
+	return (
+		message.includes("not found") ||
+		message.includes("no wallet") ||
+		message.includes("does not exist") ||
+		message.includes("wallet not initialized") ||
+		message.includes("wallet does not exist") ||
+		/\bcode\W*5\b/.test(message)
+	);
 }
 
 // loadWalletdk instantiates the walletdk WASM binary and resolves the
