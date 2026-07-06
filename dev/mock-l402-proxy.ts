@@ -26,13 +26,18 @@ const PRICE_SATS = Number(process.env.PRICE_SATS ?? 10);
 // accepts exactly that preimage, mirroring aperture's preimage check.
 const MOCK_PREIMAGE_HEX = "00".repeat(64 / 2);
 
+// BECH32_CHARSET is the data alphabet of a real invoice. It contains no "1",
+// which is what lets a decoder find the HRP separator as the last "1".
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
 // mockInvoice builds a BOLT11-shaped string whose HRP carries the price. The
-// data part is garbage: the mock payer never pays it, but the amount must
-// survive the buyer's HRP decoder.
+// data part is garbage (the mock payer never pays it), but it sticks to the
+// bech32 charset so the buyer's HRP decoder splits at the right separator.
 function mockInvoice(sats: number): string {
 	// One satoshi is 10 nano-BTC, so sats * 10 with the "n" multiplier.
 	const nanoBtc = sats * 10;
-	return `lnbcrt${nanoBtc}n1${randomBytes(48).toString("hex")}`;
+	const data = Array.from(randomBytes(96), (b) => BECH32_CHARSET[b % 32]).join("");
+	return `lnbcrt${nanoBtc}n1${data}`;
 }
 
 // Tokens issued by this proxy: opaque macaroon -> expiry.

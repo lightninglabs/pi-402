@@ -63,6 +63,14 @@ export function makeStreamSimple(deps: StreamDeps) {
 					baseURL: model.baseUrl,
 					apiKey: "unused",
 					fetch: payingFetch as typeof fetch,
+					// The paying fetch owns retry semantics: it runs the L402
+					// buyer loop and retries exactly once after payment. The
+					// SDK's default of two retries would re-enter payingFetch on
+					// any thrown error, and a throw after payment was dispatched
+					// (e.g. a preimage-wait timeout) would fetch a fresh 402 and
+					// pay a second time. Disable SDK retries so we never
+					// double-pay.
+					maxRetries: 0,
 				});
 
 				const sse = await client.chat.completions.create(
@@ -115,7 +123,11 @@ export function makeStreamSimple(deps: StreamDeps) {
 				stream.end();
 			} catch (error) {
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				output.errorMessage = error instanceof Error ? error.message : String(error);
+				// The OpenAI SDK wraps transport-level throws (including
+				// budget-policy rejections from the paying fetch) in a
+				// generic connection error; the cause carries the real story.
+				const cause = error instanceof Error && error.cause instanceof Error ? error.cause : undefined;
+				output.errorMessage = cause?.message ?? (error instanceof Error ? error.message : String(error));
 				stream.push({
 					type: "error",
 					reason: output.stopReason as "error" | "aborted",
