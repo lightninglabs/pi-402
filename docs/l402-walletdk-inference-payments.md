@@ -121,7 +121,7 @@ export default function (pi: ExtensionAPI) {
     baseUrl: process.env.L402_PROXY_URL,        // the Go proxy
     apiKey: "unused",                           // proxy holds the real key
     models: [{
-      id: "glm-4.5", name: "GLM 4.5 (L402)",
+      id: "glm-4.7", name: "GLM 4.7 (L402)",
       input: ["text"], reasoning: true,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, // sats-metered, not $/token
       contextWindow: 128000, maxTokens: 8192,
@@ -201,7 +201,7 @@ Separate deployable, identical to the earlier plan:
 
 1. Pi starts → extension `session_start` loads+unlocks walletdk; if unfunded,
    `/deposit` shows a boarding address; user funds; balance confirms.
-2. User selects `/model l402-baseten/glm-4.5` and prompts.
+2. User selects `/model l402-baseten/glm-4.7` and prompts.
 3. agent-loop → model registry → our provider `streamSimple` → OpenAI client
    whose `fetch` is `payingFetch`, `baseUrl` = proxy.
 4. First call → proxy `402` + invoice + macaroon.

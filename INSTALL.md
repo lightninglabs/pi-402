@@ -120,7 +120,7 @@ export PI402_DAILY_CAP_SAT=100000         # daily ceiling (optional)
 
 pi
 # then, inside Pi:
-/model l402-baseten/glm-4.5
+/model l402-baseten/glm-4.7
 ```
 
 Wallet commands (registered by the extension):
@@ -147,7 +147,7 @@ to end against a mock proxy:
 export PI402_MOCK_PAYER=1
 export L402_PROXY_URL="http://localhost:8402"   # your mock/dev L402 proxy
 pi -e /path/to/pi-402
-# /model l402-baseten/glm-4.5 and send a prompt; the paying fetch should
+# /model l402-baseten/glm-4.7 and send a prompt; the paying fetch should
 # handle the 402, "pay" via the mock payer, and stream a completion.
 ```
 

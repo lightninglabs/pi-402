@@ -49,7 +49,7 @@ development, and the mock-payer verification path.
 Then select the paid model and prompt:
 
 ```
-/model l402-baseten/glm-4.5
+/model l402-baseten/glm-4.7
 ```
 
 Wallet commands:
