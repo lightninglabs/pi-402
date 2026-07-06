@@ -1,0 +1,16 @@
+# meterd config for the regtest e2e environment. Bundles are denominated as
+# 1M tokens; at the blended rate below one bundle quotes at 2500 sats:
+#   price_sats = ceil(1_000_000 * (1 + 4) / 2 / 1000).
+listenaddr: "127.0.0.1:10020"
+
+bundletokens: 1000000
+
+defaultmodel: "zai-org/GLM-4.7"
+
+models:
+  "zai-org/GLM-4.7":
+    inputmsatpertoken: 1
+    outputmsatpertoken: 4
+
+# Balances survive meterd restarts.
+statepath: "meterd-state.json"
