@@ -8,13 +8,26 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-	type StopReason,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
 
 export interface StreamDeps {
 	payer: InvoicePayer;
 	policy: BuyerPolicy;
+}
+
+// BASETEN_MODEL_SLUGS maps the Pi-facing model ids (kept slash-free so they
+// compose with Pi's provider/model selection) to the full Baseten Model APIs
+// slugs sent on the wire.
+const BASETEN_MODEL_SLUGS: Record<string, string> = {
+	"glm-4.7": "zai-org/GLM-4.7",
+	"glm-5": "zai-org/GLM-5",
+	"glm-5.2": "zai-org/GLM-5.2",
+};
+
+// wireModelId resolves the model id sent to the proxy/upstream.
+function wireModelId(id: string): string {
+	return BASETEN_MODEL_SLUGS[id] ?? id;
 }
 
 // makeStreamSimple builds the paid provider's streamSimple. The returned
@@ -50,14 +63,27 @@ export function makeStreamSimple(deps: StreamDeps) {
 					baseURL: model.baseUrl,
 					apiKey: "unused",
 					fetch: payingFetch as typeof fetch,
+					// The paying fetch owns retry semantics: it runs the L402
+					// buyer loop and retries exactly once after payment. The
+					// SDK's default of two retries would re-enter payingFetch on
+					// any thrown error, and a throw after payment was dispatched
+					// (e.g. a preimage-wait timeout) would fetch a fresh 402 and
+					// pay a second time. Disable SDK retries so we never
+					// double-pay.
+					maxRetries: 0,
 				});
 
 				const sse = await client.chat.completions.create(
 					{
-						model: model.id,
+						model: wireModelId(model.id),
 						messages: toOpenAiMessages(context),
 						max_tokens: options?.maxTokens ?? Math.floor(model.maxTokens / 3),
 						stream: true,
+						// Baseten defaults include_usage to true, but ask
+						// explicitly: the final chunk's usage is what the
+						// seller-side metering debits, so both sides should
+						// see the same numbers.
+						stream_options: { include_usage: true },
 					},
 					{ signal: options?.signal },
 				);
@@ -65,13 +91,27 @@ export function makeStreamSimple(deps: StreamDeps) {
 				stream.push({ type: "start", partial: output });
 
 				// TODO(milestone-2): translate the full OpenAI streaming surface
-				// (tool calls, reasoning, usage) into AssistantMessageEvents. The
-				// custom-provider-anthropic example is the reference for the complete
-				// mapping; this handles the text path only for now.
+				// (tool calls, reasoning) into AssistantMessageEvents. The
+				// custom-provider-anthropic example is the reference for the
+				// complete mapping; this handles text and usage for now.
 				for await (const chunk of sse) {
 					const delta = chunk.choices[0]?.delta?.content ?? "";
 					if (delta) {
 						appendText(output, stream, delta);
+					}
+
+					const finish = chunk.choices[0]?.finish_reason;
+					if (finish === "length") {
+						output.stopReason = "length";
+					}
+
+					// Usage arrives on the final chunk (and, on Baseten,
+					// as running totals on every chunk); the last write
+					// wins either way.
+					if (chunk.usage) {
+						output.usage.input = chunk.usage.prompt_tokens ?? 0;
+						output.usage.output = chunk.usage.completion_tokens ?? 0;
+						output.usage.totalTokens = chunk.usage.total_tokens ?? 0;
 					}
 				}
 
@@ -83,8 +123,16 @@ export function makeStreamSimple(deps: StreamDeps) {
 				stream.end();
 			} catch (error) {
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-				output.errorMessage = error instanceof Error ? error.message : String(error);
-				stream.push({ type: "error", reason: output.stopReason as StopReason, error: output });
+				// The OpenAI SDK wraps transport-level throws (including
+				// budget-policy rejections from the paying fetch) in a
+				// generic connection error; the cause carries the real story.
+				const cause = error instanceof Error && error.cause instanceof Error ? error.cause : undefined;
+				output.errorMessage = cause?.message ?? (error instanceof Error ? error.message : String(error));
+				stream.push({
+					type: "error",
+					reason: output.stopReason as "error" | "aborted",
+					error: output,
+				});
 				stream.end();
 			}
 		})();

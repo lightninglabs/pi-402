@@ -21,17 +21,20 @@ export default function (pi: ExtensionAPI): void {
 	// The wallet holds the embedded walletdk instance for the whole session.
 	const wallet = new WalletService();
 
-	// Until darepo-client#835 lands (preimage on the settled send entry), fall
-	// back to the mock payer so the buyer loop is exercisable end to end against
-	// a mock proxy.
-	const payer = process.env.PI402_MOCK_PAYER ? new MockInvoicePayer() : new WalletInvoicePayer(wallet);
+	// The mock payer exercises the buyer loop end to end against a mock proxy
+	// with no Lightning at all; the real payer settles through walletdk.
+	const mockMode = process.env.PI402_MOCK_PAYER === "1";
+	const payer = mockMode ? new MockInvoicePayer() : new WalletInvoicePayer(wallet);
 
 	const policy = buildBudgetPolicy(pi);
 
-	// Bootstrap the wallet once per session.
-	pi.on("session_start", async () => {
-		await wallet.startAndUnlock();
-	});
+	// Bootstrap the wallet once per session. In mock mode there is no wallet
+	// to load, so the session starts without touching the WASM at all.
+	if (!mockMode) {
+		pi.on("session_start", async () => {
+			await wallet.startAndUnlock();
+		});
+	}
 
 	// Register the paid model provider. Its streamSimple owns the request path,
 	// so the paying fetch is injected without any change to Pi core.
@@ -42,13 +45,15 @@ export default function (pi: ExtensionAPI): void {
 		apiKey: "unused",
 		models: [
 			{
-				id: "glm-4.5",
-				name: "GLM 4.5 (L402)",
+				// The Pi-facing id is slash-free; the provider maps it to
+				// the Baseten Model APIs slug (zai-org/GLM-4.7) on the wire.
+				id: "glm-4.7",
+				name: "GLM 4.7 (L402)",
 				input: ["text"],
 				reasoning: true,
 				// Cost is metered in sats at the proxy, not billed per token here.
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128_000,
+				contextWindow: 200_000,
 				maxTokens: 8_192,
 			},
 		],

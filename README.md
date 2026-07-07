@@ -49,7 +49,7 @@ development, and the mock-payer verification path.
 Then select the paid model and prompt:
 
 ```
-/model l402-baseten/glm-4.5
+/model l402-baseten/glm-4.7
 ```
 
 Wallet commands:
@@ -64,9 +64,24 @@ Wallet commands:
 
 | Env var | Description |
 |---------|-------------|
-| `L402_PROXY_URL` | Base URL of the L402 proxy fronting the model |
+| `L402_PROXY_URL` | Base URL of the L402 proxy fronting the model, including the API prefix (e.g. `http://localhost:8404/v1`) |
 | `PI402_MAX_SAT_PER_REQUEST` | Per-request spend ceiling (budget policy) |
 | `PI402_DAILY_CAP_SAT` | Daily spend ceiling |
+| `PI402_MOCK_PAYER` | Set to `1` for the mock payer (no Lightning; dev only) |
+
+### Wallet backends
+
+The embedded wallet runs against one of two walletdk backends:
+
+| Env var | Description |
+|---------|-------------|
+| `PI402_WALLETD_GATEWAY` | **Sidecar mode**: HTTP/JSON gateway of a native darepod built with the `walletdkrpc` tag (e.g. `http://localhost:10031`). This is the path for Node hosts, where the WASM's OPFS-backed SQLite is unavailable. |
+| `PI402_WASM_DIR` | **Embedded WASM mode** (browser-like hosts): directory with the `make wasm-wallet` artifacts (`walletdk.wasm`, `wasm_exec.js`, sqlite bridge) |
+| `PI402_WALLET_PASSWORD` | Wallet password (created on first run) |
+| `PI402_NETWORK` | `regtest` (default), `testnet`, `mainnet` |
+| `PI402_ARK_SERVER` | Ark operator address (WASM mode) |
+| `PI402_SWAP_SERVER` | Swap server address (WASM mode) |
+| `PI402_ESPLORA_URL` | Esplora API for the embedded wallet (WASM mode) |
 
 ## Development
 
