@@ -48,3 +48,25 @@ test("preimageFromFrame throws on a failed send", () => {
 test("preimageFromFrame throws on a gateway error frame", () => {
 	assert.throws(() => preimageFromFrame({ error: { message: "boom" } }, "hash1"), /subscribe stream error: boom/);
 });
+
+test("preimageFromFrame unwraps the resumable-subscribe envelope", () => {
+	const frame = {
+		result: { cursor: "42", entry: { progress: { payment_hash: "hash1", preimage: "deadbeef" } } },
+	};
+	assert.equal(preimageFromFrame(frame, "hash1"), "deadbeef");
+});
+
+test("preimageFromFrame throws on an enveloped failed send", () => {
+	const frame = {
+		result: {
+			cursor: "43",
+			entry: { status: "ENTRY_STATUS_FAILED", failure_reason: "no route", progress: { payment_hash: "hash1" } },
+		},
+	};
+	assert.throws(() => preimageFromFrame(frame, "hash1"), /send failed: no route/);
+});
+
+test("preimageFromFrame throws on a gap signal", () => {
+	const frame = { result: { cursor: "44", gap: { reason: "buffer overflow" } } };
+	assert.throws(() => preimageFromFrame(frame, "hash1"), /subscribe stream gapped: buffer overflow/);
+});
