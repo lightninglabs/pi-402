@@ -39,22 +39,46 @@ function utcDayKey(now: Date): string {
 	return now.toISOString().slice(0, 10);
 }
 
+// SpentTodaySource supplies the sats already spent on the current UTC day,
+// typically summed from the durable receipt ledger.
+export interface SpentTodaySource {
+	spentTodaySat(): Promise<number>;
+}
+
 // buildBudgetPolicy constructs the buyer policy from environment ceilings. The
 // policy is asserted before any wallet action, on the quoted total outflow
 // (invoice principal plus swap fee), so a runaway session cannot drain the
 // wallet.
-export function buildBudgetPolicy(_pi: ExtensionAPI): BuyerPolicy {
+//
+// With a spentToday source, the daily counter is seeded from it on the first
+// assertion, so restarting the process cannot reset the day's spend to zero.
+export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTodaySource): BuyerPolicy {
 	const perRequestCap = maxSatPerRequest();
 	const dailyCapSat = readSatCeiling("PI402_DAILY_CAP_SAT", DEFAULT_DAILY_CAP_SAT);
 
 	// spentToday tracks cumulative spend for the daily ceiling, reset at the UTC
-	// day boundary. It is process local; a durable ledger keyed by wallet is
-	// future work.
+	// day boundary.
 	let spentToday = 0;
 	let currentDay = utcDayKey(new Date());
+	let seeded = spentTodaySource === undefined;
 
 	return {
 		async assertAllowed(ctx: { amountSat: number; host: string; url: string; routeId?: string }): Promise<void> {
+			// Seed lazily on the first assertion: the ledger read is async and
+			// the day total is computed at assertion time, so the seed always
+			// belongs to the day it is applied to. An unreadable ledger seeds
+			// zero, which matches the pre-ledger behavior; the per-request cap
+			// still applies either way.
+			if (!seeded) {
+				seeded = true;
+				try {
+					spentToday += await spentTodaySource!.spentTodaySat();
+				} catch {
+					// A broken ledger must not block inference.
+				}
+				currentDay = utcDayKey(new Date());
+			}
+
 			const day = utcDayKey(new Date());
 			if (day !== currentDay) {
 				currentDay = day;

@@ -91,6 +91,31 @@ test("daily cap rejects once cumulative spend would exceed it", async () => {
 	await policy.assertAllowed(ctx(50));
 });
 
+test("daily cap is seeded from the spent-today source", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// The ledger says 100 sats already went out today (a prior process), so
+	// only 50 remain under the cap.
+	const policy = buildBudgetPolicy(pi, { spentTodaySat: async () => 100 });
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+	await policy.assertAllowed(ctx(50));
+});
+
+test("an unreadable spent-today source seeds zero", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	const policy = buildBudgetPolicy(pi, {
+		spentTodaySat: async () => {
+			throw new Error("ledger unreadable");
+		},
+	});
+	// A broken ledger must not block inference; the caps still apply from a
+	// zero base.
+	await policy.assertAllowed(ctx(100));
+});
+
 test("daily counter resets at the UTC day boundary", async () => {
 	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
 	process.env.PI402_DAILY_CAP_SAT = "100";
