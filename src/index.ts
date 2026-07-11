@@ -56,6 +56,16 @@ export default function (pi: ExtensionAPI): void {
 				contextWindow: 200_000,
 				maxTokens: 8_192,
 			},
+			{
+				// Maps to zai-org/GLM-5.2 on the wire.
+				id: "glm-5.2",
+				name: "GLM 5.2 (L402)",
+				input: ["text"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 8_192,
+			},
 		],
 		streamSimple: makeStreamSimple({ payer, policy }),
 	});

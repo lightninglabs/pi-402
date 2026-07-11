@@ -1,0 +1,29 @@
+# lightmeter config for the tier-2 stack with the real Baseten upstream:
+# aperture's dynamicprice.grpcaddress points at listenaddr below. Prices
+# mirror Baseten's live catalog (USD per million tokens); check them against
+# GET /v1/models before a real run.
+listenaddr: "127.0.0.1:10025"
+dbpath: "lightmeter.db"
+defaultmodel: "zai-org/GLM-5.2"
+bundletokens: 1000000
+refreshinterval: 15m
+models:
+  "zai-org/GLM-4.7":
+    inputusdpermtok: 0.60
+    outputusdpermtok: 2.20
+  "zai-org/GLM-5.2":
+    inputusdpermtok: 1.40
+    outputusdpermtok: 4.40
+pricing:
+  marginpercent: 25
+  btcusd:
+    # Regtest: we pay ourselves, so pin the rate rather than poll Coinbase.
+    staticrate: 100000
+baseten:
+  # Enables model discovery from /v1/models. Point this at a file holding
+  # the API key; discovery is disabled without it.
+  apikeypath: "baseten.key"
+  baseurl: "https://inference.baseten.co"
+webhook:
+  listenaddr: "127.0.0.1:10026"
+  secret: "test-secret"

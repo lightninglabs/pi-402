@@ -401,7 +401,7 @@ export class NdjsonFramer {
 // preimageFromFrame classifies one decoded SubscribeWallet frame (sidecar
 // proto-JSON, snake_case). It returns the preimage once the entry for the given
 // payment hash settles, undefined for frames that are not yet terminal, and
-// throws on a gateway error frame or a failed send.
+// throws on a gateway error frame, a gap signal, or a failed send.
 export function preimageFromFrame(frame: any, paymentHash: string): string | undefined {
 	// A gateway-level error frame (e.g. {"error": {...}}) means the stream
 	// itself failed; fail fast instead of spinning to the timeout.
@@ -409,7 +409,20 @@ export function preimageFromFrame(frame: any, paymentHash: string): string | und
 		const detail = frame.error.message ?? JSON.stringify(frame.error);
 		throw new Error(`subscribe stream error: ${detail}`);
 	}
-	const entry = frame?.result ?? frame;
+	const update = frame?.result ?? frame;
+
+	// The resumable SubscribeWallet protocol wraps each item in a
+	// {cursor, entry|gap} envelope. A gap means the daemon dropped events we
+	// may have needed (the settle could be among them), so fail fast rather
+	// than spin to the timeout on a stream that can no longer deliver it.
+	if (update?.gap) {
+		const reason = update.gap.reason || "subscriber fell behind";
+		throw new Error(`subscribe stream gapped: ${reason}`);
+	}
+
+	// Unwrap the envelope, tolerating the older bare WalletEntry shape from
+	// pre-envelope daemons.
+	const entry = update?.entry ?? update;
 	const progress = entry?.progress;
 	if (progress?.payment_hash !== paymentHash) {
 		return undefined;
