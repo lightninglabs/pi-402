@@ -125,15 +125,20 @@ export interface ReceiptRecord extends ClientReceipt {
 	model?: string;
 }
 
-// receiptPaidSat extracts the paid amount of a receipt as a finite number.
-// paidSat is the payer-reported outflow including fees; the invoice face
-// value is the fallback for older records. Non-numeric values from foreign
-// writers count as zero: one string in a shared file would otherwise
-// NaN-poison the day total, and NaN loses every cap comparison, silently
-// disabling the daily ceiling for every session.
+// receiptPaidSat extracts the paid amount of a receipt: the payer-reported
+// outflow (paidSat, fees included) when usable, the invoice face value as
+// the fallback, zero otherwise. Only finite positive values count: one
+// non-numeric string in a shared file would NaN-poison the day total (NaN
+// loses every cap comparison, silently disabling the daily ceiling), and a
+// negative value would subtract from it, eroding the cap the same way.
 export function receiptPaidSat(receipt: ReceiptRecord): number {
-	const paid = Number(receipt.paidSat ?? receipt.amountSat ?? 0);
-	return Number.isFinite(paid) ? paid : 0;
+	for (const value of [receipt.paidSat, receipt.amountSat]) {
+		const paid = Number(value ?? Number.NaN);
+		if (Number.isFinite(paid) && paid > 0) {
+			return paid;
+		}
+	}
+	return 0;
 }
 
 // FileReceiptLog is an append-only newline-delimited JSON ledger of settled

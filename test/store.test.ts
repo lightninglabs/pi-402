@@ -172,18 +172,22 @@ test("a non-numeric paid amount cannot NaN-poison the day total", async () => {
 	const now = new Date("2026-07-10T12:00:00Z");
 	await log.store(receipt({ paidSat: 4004, timestamp: "2026-07-10T01:00:00Z" }));
 
-	// A foreign writer records paidSat as a string. Summing it naively would
-	// concatenate, and the resulting NaN loses every cap comparison, which
-	// silently disables the daily ceiling for every session. A numeric
-	// string coerces and counts (conservative); a non-numeric one is zero.
+	// A foreign writer records garbage amounts. Summing naively would
+	// concatenate strings, and the resulting NaN loses every cap
+	// comparison, silently disabling the daily ceiling; a negative value
+	// would subtract from the total, eroding the cap the same way. Numeric
+	// strings coerce and count (conservative), garbage paidSat falls back
+	// to the face value, and negatives count as zero.
 	await writeFile(
 		path,
 		'{"paymentHash":"cc","paidSat":"5","timestamp":"2026-07-10T02:00:00Z"}\n' +
-			'{"paymentHash":"dd","paidSat":"lots","timestamp":"2026-07-10T03:00:00Z"}\n',
+			'{"paymentHash":"dd","paidSat":"lots","timestamp":"2026-07-10T03:00:00Z"}\n' +
+			'{"paymentHash":"ee","paidSat":"junk","amountSat":900,"timestamp":"2026-07-10T04:00:00Z"}\n' +
+			'{"paymentHash":"ff","paidSat":-1000000,"timestamp":"2026-07-10T05:00:00Z"}\n',
 		{ flag: "a" },
 	);
 
 	const total = await log.spentTodaySat(now);
 	assert.equal(Number.isFinite(total), true);
-	assert.equal(total, 4009);
+	assert.equal(total, 4909);
 });
