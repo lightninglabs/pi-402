@@ -2,9 +2,12 @@
 // payment receipt ledger. Both live under the pi-402 data directory
 // (PI402_DATA_DIR, defaulting to ~/.pi402), so paid bundles survive process
 // restarts instead of being re-purchased, and every settled payment leaves an
-// auditable record.
+// auditable record. Both files are shared by concurrent pi sessions, so every
+// operation reads fresh and writes without clobbering another session's
+// state.
 
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { appendFile, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CachedToken, ClientReceipt, TokenStore } from "@aperture/client";
@@ -21,83 +24,95 @@ interface TokenStoreState {
 	tokens: Record<string, CachedToken>;
 }
 
+// isExpired reports whether a cached token is past its expiry. An empty
+// expiry means the challenge carried none, so the token does not expire; a
+// non-empty expiry that fails to parse counts as expired, since an immortal
+// bearer credential is the wrong failure mode for garbage input.
+function isExpired(token: CachedToken): boolean {
+	if (!token.expiresAt) {
+		return false;
+	}
+	const expiresMs = new Date(token.expiresAt).getTime();
+	return Number.isNaN(expiresMs) || Date.now() > expiresMs;
+}
+
 // FileTokenStore is a TokenStore backed by a JSON file. A cached token is a
 // live bearer credential for the bundle's unspent balance (macaroon plus
 // preimage), so the file is written with owner-only permissions and replaced
 // atomically: a crash mid-write must not corrupt the previous state.
+//
+// The file is shared by concurrent sessions: reads are always fresh, and a
+// write re-reads the file and merges before rewriting, so one session's paid
+// token cannot be clobbered by another session persisting its own. The
+// read-merge-write is not atomic across processes; two puts racing in the
+// same instant can still lose one token, a window that is tiny and whose
+// worst case is re-purchasing one bundle.
 export class FileTokenStore implements TokenStore {
 	private readonly path: string;
-	private tokens = new Map<string, CachedToken>();
-	private loaded = false;
 
 	constructor(path: string) {
 		this.path = path;
 	}
 
-	// load reads the persisted state once. A missing file is a fresh start. A
-	// corrupt file is set aside for postmortem rather than deleted, and the
-	// store starts empty: a broken cache must never block payments, the worst
-	// case is re-purchasing a bundle.
-	private async load(): Promise<void> {
-		if (this.loaded) {
-			return;
-		}
-		this.loaded = true;
-
+	// readState reads and parses the state file fresh, dropping expired
+	// entries. A missing file is a fresh start. A corrupt file is set aside
+	// for postmortem rather than deleted, and the read yields empty: a
+	// broken cache must never block payments, the worst case is
+	// re-purchasing a bundle.
+	private async readState(): Promise<Map<string, CachedToken>> {
 		let raw: string;
 		try {
 			raw = await readFile(this.path, "utf8");
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-				return;
+				return new Map();
 			}
 			throw err;
 		}
 
 		try {
 			const state = JSON.parse(raw) as TokenStoreState;
+			const tokens = new Map<string, CachedToken>();
 			for (const [key, token] of Object.entries(state.tokens ?? {})) {
-				this.tokens.set(key, token);
+				if (token && typeof token === "object" && !isExpired(token)) {
+					tokens.set(key, token);
+				}
 			}
+			return tokens;
 		} catch {
-			await rename(this.path, `${this.path}.corrupt`);
+			try {
+				await rename(this.path, `${this.path}.${Date.now()}.corrupt`);
+			} catch {
+				// Another session already set it aside; losing that race
+				// is fine.
+			}
+			return new Map();
 		}
-	}
-
-	// persist atomically replaces the state file with the current map.
-	private async persist(): Promise<void> {
-		const state: TokenStoreState = {
-			version: 1,
-			tokens: Object.fromEntries(this.tokens),
-		};
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-		const tmpPath = `${this.path}.tmp`;
-		await writeFile(tmpPath, JSON.stringify(state, null, "\t"), { mode: 0o600 });
-		await rename(tmpPath, this.path);
 	}
 
 	async get(key: string): Promise<CachedToken | null> {
-		await this.load();
-
-		const token = this.tokens.get(key);
-		if (!token) {
-			return null;
-		}
-
-		// Expired tokens are dropped on read, mirroring the in-memory cache.
-		// The deletion is persisted lazily by the next put.
-		if (token.expiresAt && Date.now() > new Date(token.expiresAt).getTime()) {
-			this.tokens.delete(key);
-			return null;
-		}
-
-		return token;
+		const tokens = await this.readState();
+		return tokens.get(key) ?? null;
 	}
 
 	async put(key: string, token: CachedToken): Promise<void> {
-		await this.load();
-		this.tokens.set(key, token);
-		await this.persist();
+		// Merge on write: re-read the file so tokens persisted by other
+		// sessions since our last read survive this rewrite. Expired
+		// entries fall out here, so the file cannot grow without bound.
+		const tokens = await this.readState();
+		tokens.set(key, token);
+
+		const state: TokenStoreState = {
+			version: 1,
+			tokens: Object.fromEntries(tokens),
+		};
+		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+
+		// The tmp name is unique per write, so concurrent sessions cannot
+		// truncate each other's in-flight tmp file before the rename.
+		const tmpPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+		await writeFile(tmpPath, JSON.stringify(state, null, "\t"), { mode: 0o600 });
+		await rename(tmpPath, this.path);
 	}
 }
 
@@ -120,11 +135,17 @@ export class FileReceiptLog {
 	async store(receipt: ReceiptRecord): Promise<void> {
 		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
 		await appendFile(this.path, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+
+		// appendFile's mode only applies when it creates the file; receipts
+		// hold preimages and invoices, so tighten a pre-existing file too.
+		await chmod(this.path, 0o600);
 	}
 
-	// readAll returns every parseable record in the ledger, oldest first. A
-	// trailing partial line (a crash mid-append) is skipped rather than
-	// poisoning the whole read.
+	// readAll returns every well-formed record in the ledger, oldest first. A
+	// trailing partial line (a crash mid-append) and any line that parses to
+	// something other than a receipt-shaped object are skipped rather than
+	// poisoning the whole read; a spend total must never be derailed by one
+	// bad line.
 	async readAll(): Promise<ReceiptRecord[]> {
 		let raw: string;
 		try {
@@ -142,7 +163,14 @@ export class FileReceiptLog {
 				continue;
 			}
 			try {
-				records.push(JSON.parse(line) as ReceiptRecord);
+				const parsed = JSON.parse(line) as unknown;
+				if (
+					parsed !== null &&
+					typeof parsed === "object" &&
+					typeof (parsed as ReceiptRecord).paymentHash === "string"
+				) {
+					records.push(parsed as ReceiptRecord);
+				}
 			} catch {
 				// Skip unparseable lines; the ledger stays readable.
 			}
@@ -151,8 +179,8 @@ export class FileReceiptLog {
 	}
 
 	// spentTodaySat sums the paid amounts of receipts recorded on the current
-	// UTC calendar day. Used to seed the daily budget cap on startup, so a
-	// process restart cannot reset the day's spend to zero.
+	// UTC calendar day. The budget policy reads this on every assertion, so
+	// concurrent sessions see each other's settled spends.
 	async spentTodaySat(now: Date = new Date()): Promise<number> {
 		const day = now.toISOString().slice(0, 10);
 

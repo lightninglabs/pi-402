@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -61,9 +61,11 @@ test("FileTokenStore sets a corrupt file aside and starts empty", async () => {
 	const store = new FileTokenStore(path);
 	assert.equal(await store.get("key"), null);
 
-	// The corrupt file is preserved for postmortem, not deleted.
-	const preserved = await readFile(`${path}.corrupt`, "utf8");
-	assert.equal(preserved, "not json{{{");
+	// The corrupt file is preserved for postmortem under a timestamped
+	// name, not deleted.
+	const corruptName = (await readdir(dir)).find((name) => name.endsWith(".corrupt"));
+	assert.ok(corruptName, "expected a .corrupt file to be set aside");
+	assert.equal(await readFile(join(dir, corruptName), "utf8"), "not json{{{");
 
 	// The store keeps working after recovery.
 	const token = {
@@ -103,6 +105,53 @@ test("FileReceiptLog reads an empty total from a missing file", async () => {
 	const log = new FileReceiptLog(join(await tempDir(), "receipts.ndjson"));
 	assert.deepEqual(await log.readAll(), []);
 	assert.equal(await log.spentTodaySat(), 0);
+});
+
+test("FileTokenStore merges concurrent sessions' tokens on write", async () => {
+	const path = join(await tempDir(), "tokens.json");
+	const token = (preimage: string) => ({
+		macaroonB64: "AQIDBA==",
+		preimageHex: preimage.repeat(32),
+		expiresAt: "2099-01-01T00:00:00Z",
+	});
+
+	// Two store instances simulate two concurrent pi sessions sharing the
+	// file. Each pays for a different origin; both credentials must survive.
+	const sessionA = new FileTokenStore(path);
+	const sessionB = new FileTokenStore(path);
+	await sessionA.put("http://localhost:8404|/v1/chat|POST", token("aa"));
+	await sessionB.put("http://localhost:8402|/v1/chat|POST", token("bb"));
+
+	const fresh = new FileTokenStore(path);
+	assert.deepEqual(await fresh.get("http://localhost:8404|/v1/chat|POST"), token("aa"));
+	assert.deepEqual(await fresh.get("http://localhost:8402|/v1/chat|POST"), token("bb"));
+});
+
+test("FileTokenStore treats a garbage expiry as expired", async () => {
+	const path = join(await tempDir(), "tokens.json");
+	const store = new FileTokenStore(path);
+	await store.put("key", {
+		macaroonB64: "AQIDBA==",
+		preimageHex: "ab".repeat(32),
+		expiresAt: "not-a-date",
+	});
+
+	// An unparseable expiry must not mint an immortal bearer credential.
+	assert.equal(await store.get("key"), null);
+});
+
+test("FileReceiptLog skips lines that are not receipt-shaped objects", async () => {
+	const path = join(await tempDir(), "receipts.ndjson");
+	const log = new FileReceiptLog(path);
+	await log.store(receipt());
+
+	// Valid JSON that is not a receipt (null, a number, an object missing
+	// paymentHash) must be skipped, not crash the read or zero the total.
+	await writeFile(path, 'null\n42\n{"amountSat":9}\n', { flag: "a" });
+
+	const records = await log.readAll();
+	assert.equal(records.length, 1);
+	assert.equal(await log.spentTodaySat(), 4004);
 });
 
 test("spentTodaySat sums only the current UTC day, preferring paidSat", async () => {

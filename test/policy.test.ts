@@ -91,7 +91,7 @@ test("daily cap rejects once cumulative spend would exceed it", async () => {
 	await policy.assertAllowed(ctx(50));
 });
 
-test("daily cap is seeded from the spent-today source", async () => {
+test("daily cap counts the ledger's spend on every assertion", async () => {
 	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
 	process.env.PI402_DAILY_CAP_SAT = "150";
 
@@ -102,7 +102,39 @@ test("daily cap is seeded from the spent-today source", async () => {
 	await policy.assertAllowed(ctx(50));
 });
 
-test("an unreadable spent-today source seeds zero", async () => {
+test("concurrent first assertions cannot race past the ledger", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// A slow ledger read must not open a window where a second concurrent
+	// assertion sees a zero base and slips under the cap.
+	const slowLedger = {
+		spentTodaySat: () => new Promise<number>((resolve) => setTimeout(() => resolve(100), 20)),
+	};
+	const policy = buildBudgetPolicy(pi, slowLedger);
+
+	const results = await Promise.allSettled([policy.assertAllowed(ctx(60)), policy.assertAllowed(ctx(60))]);
+	assert.deepEqual(
+		results.map((r) => r.status),
+		["rejected", "rejected"],
+	);
+});
+
+test("a ledger that grows behind the process's back still counts", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// Another session settles 120 sats between our assertions; the fresh
+	// read on the next assertion must pick it up.
+	let ledgerTotal = 0;
+	const policy = buildBudgetPolicy(pi, { spentTodaySat: async () => ledgerTotal });
+
+	await policy.assertAllowed(ctx(20));
+	ledgerTotal = 120;
+	await assert.rejects(() => policy.assertAllowed(ctx(40)), /exceed daily cap/);
+});
+
+test("an unreadable ledger degrades to the in-memory counter", async () => {
 	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
 	process.env.PI402_DAILY_CAP_SAT = "150";
 
@@ -111,9 +143,10 @@ test("an unreadable spent-today source seeds zero", async () => {
 			throw new Error("ledger unreadable");
 		},
 	});
-	// A broken ledger must not block inference; the caps still apply from a
-	// zero base.
+	// A broken ledger must not block inference; the caps still apply from
+	// the in-memory counter.
 	await policy.assertAllowed(ctx(100));
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
 });
 
 test("daily counter resets at the UTC day boundary", async () => {
