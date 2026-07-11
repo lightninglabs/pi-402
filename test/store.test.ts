@@ -156,15 +156,34 @@ test("FileReceiptLog skips lines that are not receipt-shaped objects", async () 
 
 test("spentTodaySat sums only the current UTC day, preferring paidSat", async () => {
 	const log = new FileReceiptLog(join(await tempDir(), "receipts.ndjson"));
-	await log.store(receipt({ paidSat: 4004 }));
-	await log.store(receipt({ paidSat: 2000 }));
+	// A fixed clock keeps the test off the real UTC midnight boundary.
+	const now = new Date("2026-07-10T12:00:00Z");
+	await log.store(receipt({ paidSat: 4004, timestamp: "2026-07-10T01:00:00Z" }));
+	await log.store(receipt({ paidSat: 2000, timestamp: "2026-07-10T11:59:00Z" }));
 	// Yesterday's spend must not count against today's cap.
-	await log.store(
-		receipt({
-			paidSat: 9999,
-			timestamp: new Date(Date.now() - 48 * 3600 * 1000).toISOString(),
-		}),
+	await log.store(receipt({ paidSat: 9999, timestamp: "2026-07-09T23:59:59Z" }));
+
+	assert.equal(await log.spentTodaySat(now), 6004);
+});
+
+test("a non-numeric paid amount cannot NaN-poison the day total", async () => {
+	const path = join(await tempDir(), "receipts.ndjson");
+	const log = new FileReceiptLog(path);
+	const now = new Date("2026-07-10T12:00:00Z");
+	await log.store(receipt({ paidSat: 4004, timestamp: "2026-07-10T01:00:00Z" }));
+
+	// A foreign writer records paidSat as a string. Summing it naively would
+	// concatenate, and the resulting NaN loses every cap comparison, which
+	// silently disables the daily ceiling for every session. A numeric
+	// string coerces and counts (conservative); a non-numeric one is zero.
+	await writeFile(
+		path,
+		'{"paymentHash":"cc","paidSat":"5","timestamp":"2026-07-10T02:00:00Z"}\n' +
+			'{"paymentHash":"dd","paidSat":"lots","timestamp":"2026-07-10T03:00:00Z"}\n',
+		{ flag: "a" },
 	);
 
-	assert.equal(await log.spentTodaySat(), 6004);
+	const total = await log.spentTodaySat(now);
+	assert.equal(Number.isFinite(total), true);
+	assert.equal(total, 4009);
 });

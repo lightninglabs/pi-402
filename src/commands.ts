@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { FileReceiptLog } from "./store.ts";
+import { type FileReceiptLog, receiptPaidSat } from "./store.ts";
 import type { WalletService } from "./wallet.ts";
 
 // registerWalletCommands wires the /wallet, /deposit, and /balance slash
@@ -45,17 +45,21 @@ export function registerReceiptCommands(pi: ExtensionAPI, receiptLog: FileReceip
 				return;
 			}
 
-			const totalSat = receipts.reduce((sum, r) => sum + (r.paidSat ?? r.amountSat ?? 0), 0);
-			const todaySat = await receiptLog.spentTodaySat();
+			// One read serves all three views; the day total filters the
+			// records already in hand.
+			const day = new Date().toISOString().slice(0, 10);
+			const totalSat = receipts.reduce((sum, r) => sum + receiptPaidSat(r), 0);
+			const todaySat = receipts
+				.filter((r) => r.timestamp?.slice(0, 10) === day)
+				.reduce((sum, r) => sum + receiptPaidSat(r), 0);
 
 			const recent = receipts
 				.slice(-10)
 				.reverse()
 				.map((r) => {
 					const model = r.model ?? "unknown-model";
-					const paid = r.paidSat ?? r.amountSat ?? 0;
 					const when = r.timestamp?.replace("T", " ").slice(0, 19) ?? "unknown-time";
-					return `${when}  ${paid} sat  ${model}  ${r.paymentHash.slice(0, 12)}…`;
+					return `${when}  ${receiptPaidSat(r)} sat  ${model}  ${r.paymentHash.slice(0, 12)}…`;
 				})
 				.join("\n");
 

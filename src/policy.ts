@@ -99,6 +99,12 @@ export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTod
 			// either gap. Units differ slightly, quoted face value in the
 			// counter vs fee-inclusive paidSat in the ledger, which also
 			// errs on the conservative side.
+			//
+			// The residual overshoot bound across sessions is the sum of
+			// all in-flight (asserted, not yet settled) amounts in OTHER
+			// processes, each bounded by their per-request cap; unsettled
+			// spends are invisible to this process until they reach the
+			// ledger.
 			const effectiveSpent = Math.max(spentToday, ledgerToday);
 			if (effectiveSpent + ctx.amountSat > dailyCapSat) {
 				throw new Error(`payment would exceed daily cap ${dailyCapSat} sat`);

@@ -80,6 +80,9 @@ export class FileTokenStore implements TokenStore {
 			}
 			return tokens;
 		} catch {
+			// Quarantining a paid-token file is worth a loud line: the
+			// bounded cost is re-purchasing whatever bundles it held.
+			console.warn(`pi-402: token store ${this.path} is corrupt, setting it aside`);
 			try {
 				await rename(this.path, `${this.path}.${Date.now()}.corrupt`);
 			} catch {
@@ -120,6 +123,17 @@ export class FileTokenStore implements TokenStore {
 // buyer loop, stamped with the model the payment bought inference for.
 export interface ReceiptRecord extends ClientReceipt {
 	model?: string;
+}
+
+// receiptPaidSat extracts the paid amount of a receipt as a finite number.
+// paidSat is the payer-reported outflow including fees; the invoice face
+// value is the fallback for older records. Non-numeric values from foreign
+// writers count as zero: one string in a shared file would otherwise
+// NaN-poison the day total, and NaN loses every cap comparison, silently
+// disabling the daily ceiling for every session.
+export function receiptPaidSat(receipt: ReceiptRecord): number {
+	const paid = Number(receipt.paidSat ?? receipt.amountSat ?? 0);
+	return Number.isFinite(paid) ? paid : 0;
 }
 
 // FileReceiptLog is an append-only newline-delimited JSON ledger of settled
@@ -187,9 +201,7 @@ export class FileReceiptLog {
 		let total = 0;
 		for (const receipt of await this.readAll()) {
 			if (receipt.timestamp?.slice(0, 10) === day) {
-				// paidSat is the payer-reported outflow including fees; fall
-				// back to the invoice face value for older records.
-				total += receipt.paidSat ?? receipt.amountSat ?? 0;
+				total += receiptPaidSat(receipt);
 			}
 		}
 		return total;
