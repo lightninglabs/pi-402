@@ -49,3 +49,17 @@ lnd-server + lnd-client + arkd + darepod + electrs) since the swap runtime
 must share a chain with the invoice node. See the darepo repo's
 `docker-compose.yml` and `scripts/docker-regtest-setup.sh`; walletdk WASM
 artifacts come from `make wasm-wallet` in darepo-client.
+
+## Real Baseten upstream
+
+`aperture-baseten.yaml` + `lightmeter.yaml` are the seller configs for the
+real-model variant: aperture fronts `inference.baseten.co` directly and
+injects `Authorization: Bearer ${BASETEN_GLM_5_2}` from its environment (the
+`${ENV}` header expansion on the aperture `inference-pricing` branch), while
+lightmeter prices bundles from Baseten's live per-model USD rates. No API key
+ever reaches pi: the proxy holds the credential, per the L402 design.
+
+The compose stack's lnd-client (host `localhost:10010`) plays the invoice
+node, so `authenticator.lndhost` points there. On machines where something
+already squats host port 10009, remap lnd-server (the swapd node) to 10109
+in a compose override.

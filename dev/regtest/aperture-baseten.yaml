@@ -1,0 +1,36 @@
+# Aperture seller config for the tier-2 stack with the real Baseten upstream.
+# Aperture holds the model credential; pi never sees it. The key is read from
+# the environment at startup (requires the ${ENV} header expansion from the
+# aperture inference-pricing branch), so no secret lives in this file.
+#
+# Adjust the sqlite/tls/macaroon paths to your scratch directory before use.
+listenaddr: "127.0.0.1:8404"
+insecure: true
+servestatic: false
+autocert: false
+dbbackend: "sqlite"
+sqlite:
+  databasefilename: "aperture.db"
+authenticator:
+  network: "regtest"
+  # The invoice node: the compose stack's lnd-client, reachable on the host.
+  lndhost: "localhost:10010"
+  tlspath: "lnd-client/tls.cert"
+  macdir: "lnd-client"
+services:
+  - name: "inference"
+    hostregexp: ".*"
+    pathregexp: "^/v1/.*"
+    # The real Baseten Model APIs upstream (OpenAI-compatible under /v1).
+    address: "inference.baseten.co"
+    protocol: "https"
+    auth: "on"
+    headers:
+      Authorization: "Bearer ${BASETEN_GLM_5_2}"
+    dynamicprice:
+      enabled: true
+      # The metering daemon: lightmeter in production, meterd for a
+      # reference setup (see meterd.yaml).
+      grpcaddress: "127.0.0.1:10025"
+      insecure: true
+      metered: true
