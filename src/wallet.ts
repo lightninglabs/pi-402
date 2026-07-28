@@ -177,6 +177,37 @@ export class WalletService {
 		return res.Address ?? res.address;
 	}
 
+	// receiveInvoice returns a BOLT11 invoice for the given amount that any
+	// Lightning wallet can pay to fund this one. The daemon sets up the
+	// inbound receive through its swap subsystem, so the funds arrive as
+	// spendable balance in seconds.
+	//
+	// This is the fast counterpart to depositAddress: an on-chain boarding
+	// deposit costs a confirmation plus an Ark round before it can be spent,
+	// which is minutes at best.
+	async receiveInvoice(amountSat: number, memo = "pi-402 wallet funding"): Promise<string> {
+		if (!Number.isInteger(amountSat) || amountSat <= 0) {
+			throw new Error(`funding amount must be a positive whole number of sats, got ${amountSat}`);
+		}
+
+		if (this.gateway) {
+			const res = await this.rest("/v1/wallet/recv", {
+				amt_sat: amountSat,
+				memo,
+			});
+			return res.invoice;
+		}
+
+		// The WASM bridge marshals the Go request struct, so its field names
+		// are PascalCase; the gateway's JSON gateway uses snake_case. Read the
+		// response tolerantly for the same reason.
+		const res = await this.requireCall()("receive", {
+			AmountSat: amountSat,
+			Memo: memo,
+		});
+		return res.Invoice ?? res.invoice;
+	}
+
 	// openWalletStreamRest opens the gateway's SubscribeWallet NDJSON stream. It
 	// is opened before the send is dispatched so the settle cannot be missed;
 	// the caller reads it via readPreimageRest and must close it.

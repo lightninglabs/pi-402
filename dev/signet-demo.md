@@ -10,6 +10,13 @@ wallet, then prompt and watch the L402 loop settle a real payment.
 > path, but the Ark side (arkd / darepod / swapd) has not been exercised on
 > signet here. Do a full dry run the day before, not the hour before.
 
+> **Merge PR #11 first.** The `/receipts` command and the durable token cache
+> live on the `durable-receipts` branch, still open as
+> [#11](https://github.com/lightninglabs/pi-402/pull/11). Without it there is
+> no `/receipts` to close on (§6), and the token cache is in-memory, so every
+> `pi` process re-buys a bundle. Within one session the reuse story still
+> works, but a restart mid-demo costs another 11,500 sats.
+
 ## 0. The bootstrapping question, answered
 
 **Does this work from a cold start, with no prior paid inference?** Yes, and
@@ -29,41 +36,39 @@ nothing needs seeding.
 
 The only precondition is **a funded wallet**. There is no chicken-and-egg.
 
-## 1. Funding: pick your path before the talk
+## 1. Funding: two paths, and which to put on stage
 
-This is the one part with real latency risk, so decide deliberately.
+### `/fund <sats>`: the live path
 
-### What `/deposit` does today
+```
+/fund 50000
+```
 
-`/deposit` calls walletdk's `Deposit`, which returns an **on-chain boarding
-address** (`src/wallet.ts`, `depositAddress()`). The daemon watches that
-address and rolls the boarding output into the next Ark round. So an on-chain
-deposit costs you **a signet confirmation plus a round** before the balance is
-spendable. Signet blocks average ten minutes and are bursty. Do not put that
-on stage.
+Returns a **BOLT11 invoice** (walletdk's `receive`, wired in
+`src/wallet.ts` as `receiveInvoice()`). Pay it from the Wavelength web wallet
+and the balance lands in **seconds**, because the daemon sets the receive up
+through its swap subsystem and nothing touches the chain. This is the funding
+moment worth showing live.
 
-### The fast path (not yet wired)
+### `/deposit`: the on-chain path
 
-walletdk also has a **`Recv`** RPC that returns a **BOLT11 invoice** backed by
-an inbound swap. Paying that from Wavelength is seconds, not blocks, because
-it never touches the chain. pi-402 does not expose it yet: there is no
-`/fund <sats>` command. Wiring one is small (mirror `depositAddress()`, call
-`Recv` instead of `deposit`), and it is the difference between a three-second
-funding step and a ten-minute one.
+Returns an **on-chain boarding address**. The daemon watches it and rolls the
+boarding output into the next Ark round, so the balance costs **a signet
+confirmation plus a round** before it is spendable. Signet blocks average ten
+minutes and are bursty. Fine for pre-funding, wrong for the stage.
 
-### Recommended demo shape
+### Recommended demo shape: do both
 
-Whichever path you take, **pre-fund before the talk**:
+Use `/fund` live, but **pre-fund the day before as the safety net**, so a swap
+server hiccup can't sink the demo:
 
-1. The day before, deposit enough for the whole demo plus headroom. A 1M-token
-   Kimi K3 bundle quotes at ~11,500 sats (see §4), so fund **50k sats** and you
-   can buy four bundles without thinking about it.
-2. Confirm it landed: `/balance` should show the confirmed amount.
-3. On stage, show the *already funded* wallet with `/balance`, and narrate the
-   deposit rather than waiting on it.
-4. If you want a live funding moment, kick off a second deposit at the top of
-   the talk and check back at the end. It either confirms (nice) or it doesn't
-   (you already have the balance you need).
+1. The day before, fund enough for the whole demo plus headroom. A 1M-token
+   Kimi K3 bundle quotes at ~11,500 sats (see §4), so **50k sats** buys four
+   bundles without thinking about it.
+2. Confirm it landed with `/balance`.
+3. On stage, run `/fund 20000`, pay from Wavelength, and watch `/balance` move.
+   If it stalls, you already have the balance to keep going, and the stall
+   costs you a sentence instead of the demo.
 
 ## 2. Act one: the model is real
 
@@ -162,6 +167,8 @@ Then in the session:
 
 ```
 /balance                      # show the pre-funded wallet
+/fund 20000                   # live top-up: pay this from Wavelength
+/balance                      # watch it land
 /model l402-baseten/kimi-k3
 ```
 
@@ -209,7 +216,9 @@ it exactly as it paid the first. Same code path as cold start.
 | Aperture start-up error about an unset env var | `${BASETEN_API_KEY}` not exported into aperture's environment | Export it in the same shell that launches aperture |
 | "payment N sat exceeds per-request cap" | `PI402_MAX_SAT_PER_REQUEST` below the bundle quote | Raise it above 11,500 |
 | 402 loops forever | Invoice paid but preimage never observed | Check the swap server and the wallet subscription; the payer waits on the settled entry |
-| Balance shows 0 after depositing | Boarding output not yet confirmed or not yet rolled into a round | This is the §1 latency; pre-fund |
+| Balance shows 0 after `/deposit` | Boarding output not yet confirmed or not yet rolled into a round | This is the §1 latency; pre-fund |
+| `/fund` invoice never settles | Swap server unreachable, or no inbound capacity for the receive | Fall back to the pre-funded balance and keep going |
+| `/fund` says "Usage: /fund \<sats\>" | Amount missing or not a positive whole number | `/fund 20000`; underscores and commas are fine |
 | Model rejected by the meter | Model not in lightmeter's `models` map | Unknown models fail resolution by design, so a seller never quotes an unpriced model |
 
 ## 8. The one-sentence close

@@ -19,7 +19,10 @@ model provider backed by an embedded walletdk wallet.
 - `wallet.ts` — `WalletService`: the embedded walletdk WASM wrapper
   (`prepareSend` → `sendPrepared` → await preimage; balance; boarding address).
 - `policy.ts` — `buildBudgetPolicy`: per-request and daily spend ceilings.
-- `commands.ts` — `/wallet`, `/deposit`, `/balance`.
+- `commands.ts` — `/wallet`, `/fund`, `/deposit`, `/balance`. Two funding
+  paths: `/fund <sats>` returns a BOLT11 invoice (walletdk `receive`, settled
+  through an inbound swap in seconds), `/deposit` returns an on-chain boarding
+  address (a confirmation plus an Ark round before it is spendable).
 
 ## Invariants
 
