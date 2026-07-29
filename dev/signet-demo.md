@@ -50,13 +50,51 @@ and the balance lands in **seconds**, because the daemon sets the receive up
 through its swap subsystem and nothing touches the chain. This is the funding
 moment worth showing live.
 
-Worth knowing before you narrate it: when the paying wallet is itself an Ark
-wallet on the same operator, `prepare-send` quotes the payment on the
-`SEND_RAIL_IN_ARK` rail at **zero fee** rather than routing it over Lightning.
-Both legs would otherwise land on the swap server's own node, and it settles
-the transfer in Ark instead of paying its own invoice. So the invoice is the
-interface, but the sats may never touch a Lightning channel. Say "paid the
-invoice", not "routed over Lightning", unless you have checked the rail.
+### Which rail actually carries the sats
+
+Worth understanding before you narrate any of it, because the honest sentence
+is not the obvious one.
+
+A BOLT11 invoice is the *interface* here, not the settlement path. When you
+call `prepare-send`, the quote comes back with a `rail`, and the swap server
+picks it, not the wallet: `swapwallet/router.go` only maps the server's
+`SwapSettlementType` onto the client-facing `SendRail`. Two rails matter for
+this demo.
+
+**`SEND_RAIL_LIGHTNING`** is what an L402 payment uses. Aperture mints its
+invoice on a plain Lightning node, which is nobody's Ark client, so the swap
+server has to actually pay it: it takes the VTXO and sends a real HTLC over a
+real channel. This is the path every payment in `/receipts` took.
+
+**`SEND_RAIL_IN_ARK`** is what a wallet-to-wallet deposit uses. When both ends
+are Ark wallets on the same operator, paying the invoice over Lightning would
+mean the swap server's node paying an invoice its own node issued. Instead it
+settles the transfer inside Ark, and the quote comes back at **zero fee**.
+
+The part worth being precise about: settling in Ark does **not** mean a
+trusted book transfer. The server builds a **vHTLC** (`arkscript.NewVHTLCPolicy`)
+whose `PreimageHash` is *the invoice's own payment hash*, verbatim. The sender
+funds it, a `refund_without_receiver` recovery job is armed immediately, and
+that job is only cancelled once the claim is seen:
+
+```
+SWAP: In-swap vHTLC funding submitted hash=678ce54d… outpoint=a3fc0af6…:0
+VREC: vhtlc recovery job created  … direction=pay action=refund_without_receiver state=armed
+VREC: vhtlc recovery cancelled    … cancel_reason="server claim observed"
+```
+
+So it is the same hash-locked, unilaterally-refundable contract Lightning
+gives you, with the HTLC living as an Ark virtual output instead of a channel
+HTLC. The preimage is still revealed to claim it, which is why this rail would
+preserve L402's proof-of-payment property if a seller were ever an Ark wallet
+too.
+
+**How to say it on stage.** "The wallet paid the invoice" is always true.
+"Routed over Lightning" is true for the L402 payments and false for the
+deposit. If you want one line that covers both: *the invoice is the interface,
+and the network picks the cheapest settlement that still honours the payment
+hash.* You can show the split live from the swap server's log, where the two
+read as `Sending in-swap Lightning payment` and `Created in-ark p2p swap`.
 
 ### `/deposit`: the on-chain path
 
