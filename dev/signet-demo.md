@@ -50,6 +50,14 @@ and the balance lands in **seconds**, because the daemon sets the receive up
 through its swap subsystem and nothing touches the chain. This is the funding
 moment worth showing live.
 
+Worth knowing before you narrate it: when the paying wallet is itself an Ark
+wallet on the same operator, `prepare-send` quotes the payment on the
+`SEND_RAIL_IN_ARK` rail at **zero fee** rather than routing it over Lightning.
+Both legs would otherwise land on the swap server's own node, and it settles
+the transfer in Ark instead of paying its own invoice. So the invoice is the
+interface, but the sats may never touch a Lightning channel. Say "paid the
+invoice", not "routed over Lightning", unless you have checked the rail.
+
 ### `/deposit`: the on-chain path
 
 Returns an **on-chain boarding address**. The daemon watches it and rolls the
@@ -220,6 +228,9 @@ it exactly as it paid the first. Same code path as cold start.
 | `/fund` invoice never settles | Swap server unreachable, or no inbound capacity for the receive | Fall back to the pre-funded balance and keep going |
 | `/fund` says "Usage: /fund \<sats\>" | Amount missing or not a positive whole number | `/fund 20000`; underscores and commas are fine |
 | Model rejected by the meter | Model not in lightmeter's `models` map | Unknown models fail resolution by design, so a seller never quotes an unpriced model |
+| Session aborts at start-up with "wallet is not ready (create first)" | The sidecar has no wallet yet, and the bootstrap read the probe failure as fatal | Needs the fix in `93bbff1`; before it, the first run against a fresh wallet could never start |
+| Answers arrive as `<\|open\|>call tool="bash"...` markup | The request carried no tool declarations, so the model fell back to its native call syntax | Needs the fix in `ef9f9b5`, which declares Pi's tools and translates `tool_calls` back |
+| Long pause before any text on Kimi K3 | Reasoning streams first, and on a short answer it is most of the response | Expected; reasoning now renders as thinking content rather than dead air |
 
 ## 8. The one-sentence close
 
