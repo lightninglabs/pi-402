@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -190,4 +190,40 @@ test("a non-numeric paid amount cannot NaN-poison the day total", async () => {
 	const total = await log.spentTodaySat(now);
 	assert.equal(Number.isFinite(total), true);
 	assert.equal(total, 4909);
+});
+
+test("FileReceiptLog skips a record whose timestamp is not a string", async () => {
+	const path = join(await tempDir(), "receipts.ndjson");
+	const log = new FileReceiptLog(path);
+	const now = new Date("2026-07-10T12:00:00Z");
+	await log.store(receipt({ paidSat: 4004, timestamp: "2026-07-10T01:00:00Z" }));
+
+	// A foreign writer records a numeric timestamp. Every reader slices the
+	// timestamp to get the day, and optional chaining does not guard a
+	// non-nullish non-string, so letting this line through would make
+	// spentTodaySat throw. The budget policy catches that and falls back to
+	// its in-memory counter, which a restart resets: one bad line would
+	// silently cost the daily cap its memory for good.
+	await writeFile(path, '{"paymentHash":"aa","paidSat":500,"timestamp":20260710}\n', { flag: "a" });
+
+	const records = await log.readAll();
+	assert.equal(records.length, 1);
+	assert.equal(await log.spentTodaySat(now), 4004);
+});
+
+test("FileTokenStore keeps working when the file cannot be read", async () => {
+	const dir = await tempDir();
+	const path = join(dir, "tokens.json");
+	await writeFile(path, "{}");
+	// Make the file unreadable. A read error must not escape: it would fail
+	// the request before it was attempted, and a broken cache must never
+	// block a payment.
+	await chmod(path, 0o000);
+
+	const store = new FileTokenStore(path);
+	try {
+		assert.equal(await store.get("key"), null);
+	} finally {
+		await chmod(path, 0o600);
+	}
 });

@@ -41,6 +41,39 @@ function wireModelId(id: string): string {
 	return BASETEN_MODEL_SLUGS[id] ?? id;
 }
 
+// requestUrl extracts the URL from any of the shapes fetch accepts, without
+// consuming the request body.
+function requestUrl(input: RequestInfo | URL): string {
+	if (typeof input === "string") {
+		return input;
+	}
+	if (input instanceof URL) {
+		return input.href;
+	}
+	return input.url;
+}
+
+// tokenRouteId scopes a cached L402 token to one model.
+//
+// The token cache keys on origin + routeId + method, and routeId defaults to
+// the request path. Every model this provider registers posts to the same
+// /v1/chat/completions path, so without the model in the key they all share
+// one cache slot: paying for model B would overwrite the token for model A and
+// strand A's unspent bundle balance, since the macaroon and preimage needed to
+// present it are gone. The seller already refuses to spend one model's bundle
+// on another, so the buyer must track them separately too.
+export function tokenRouteId(input: RequestInfo | URL, model: string): string {
+	let path: string;
+	try {
+		path = new URL(requestUrl(input)).pathname;
+	} catch {
+		// A URL we cannot parse still needs a stable key; the model alone
+		// keeps distinct models from sharing a token.
+		path = "";
+	}
+	return `${path}|${model}`;
+}
+
 // makeStreamSimple builds the paid provider's streamSimple. The returned
 // function owns the entire request path to the L402 proxy: it constructs an
 // OpenAI client whose fetch is a paying fetch, so 402 challenges are paid and
@@ -83,10 +116,18 @@ export function makeStreamSimple(deps: StreamDeps) {
 					receiptCache,
 				});
 
+				const wireModel = wireModelId(model.id);
+
 				const client = new OpenAI({
 					baseURL: model.baseUrl,
 					apiKey: "unused",
-					fetch: payingFetch as typeof fetch,
+					// Scope the cached token to this model, so one model's
+					// paid bundle is never overwritten by another's payment.
+					fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+						payingFetch(input, {
+							...init,
+							routeId: tokenRouteId(input, wireModel),
+						})) as typeof fetch,
 					// The paying fetch owns retry semantics: it runs the L402
 					// buyer loop and retries exactly once after payment. The
 					// SDK's default of two retries would re-enter payingFetch on

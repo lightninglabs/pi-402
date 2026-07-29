@@ -67,7 +67,14 @@ export class FileTokenStore implements TokenStore {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 				return new Map();
 			}
-			throw err;
+			// Any other read failure (a bad mode, a full disk, a stale NFS
+			// handle) is treated like corruption rather than rethrown. A
+			// throw here escapes through tokenCache.get and fails the
+			// request before it is even attempted, which breaks the rule
+			// this module is built on: a broken cache must never block
+			// payments. The cost of continuing is re-purchasing a bundle.
+			console.warn(`pi-402: token store ${this.path} is unreadable, continuing without it:`, err);
+			return new Map();
 		}
 
 		try {
@@ -186,7 +193,15 @@ export class FileReceiptLog {
 				if (
 					parsed !== null &&
 					typeof parsed === "object" &&
-					typeof (parsed as ReceiptRecord).paymentHash === "string"
+					typeof (parsed as ReceiptRecord).paymentHash === "string" &&
+					// The timestamp must be a string, not merely present.
+					// Every reader slices it to get the day, and optional
+					// chaining does not guard a non-nullish non-string:
+					// (123)?.slice(0, 10) throws. One such line would make
+					// spentTodaySat throw on every assertion, degrading the
+					// daily cap to the in-memory counter for the rest of the
+					// process.
+					typeof (parsed as ReceiptRecord).timestamp === "string"
 				) {
 					records.push(parsed as ReceiptRecord);
 				}

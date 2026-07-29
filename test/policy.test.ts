@@ -107,17 +107,21 @@ test("concurrent first assertions cannot race past the ledger", async () => {
 	process.env.PI402_DAILY_CAP_SAT = "150";
 
 	// A slow ledger read must not open a window where a second concurrent
-	// assertion sees a zero base and slips under the cap.
+	// assertion sees a stale base and slips under the cap.
 	const slowLedger = {
 		spentTodaySat: () => new Promise<number>((resolve) => setTimeout(() => resolve(100), 20)),
 	};
 	const policy = buildBudgetPolicy(pi, slowLedger);
 
-	const results = await Promise.allSettled([policy.assertAllowed(ctx(60)), policy.assertAllowed(ctx(60))]);
-	assert.deepEqual(
-		results.map((r) => r.status),
-		["rejected", "rejected"],
-	);
+	// The amounts are chosen so the two outcomes actually differ. With the
+	// ledger at 100 and the cap at 150, exactly one 30-sat payment fits.
+	// Under a check-then-update interleaving both assertions would read the
+	// ledger's 100 before either incremented, both would compute 130, and
+	// both would be allowed. Asserting one-of-each is what catches that; two
+	// 60-sat payments would be rejected either way and prove nothing.
+	const results = await Promise.allSettled([policy.assertAllowed(ctx(30)), policy.assertAllowed(ctx(30))]);
+	const statuses = results.map((r) => r.status).sort();
+	assert.deepEqual(statuses, ["fulfilled", "rejected"]);
 });
 
 test("a ledger that grows behind the process's back still counts", async () => {
