@@ -52,6 +52,9 @@ if [[ "$WATCH" == "yes" ]]; then
 	done
 fi
 
+STATE_PAYLOG="$(mktemp -t pi402-payinvoice)"
+trap 'rm -f "$STATE_PAYLOG"' EXIT
+
 BEFORE="$(balance)"
 echo "buyer balance before: ${BEFORE:-unknown} sat"
 
@@ -74,9 +77,47 @@ EOF
 	exit 0
 fi
 
+# Preflight the swap server's Ark liquidity. An in-swap pays the buyer out of
+# swapd's own VTXOs, so a receive larger than what it can spend is refused at
+# admission and surfaces as a bare "[lncli] FAILED" with the real reason buried
+# in swapd's log. Checking first turns that into a number you can act on.
+SPENDABLE="$(docker logs ark-swapd 2>&1 | grep 'Auto-boarder decision' | tail -1 \
+	| grep -oE 'live_vtxo_sat=[0-9]+' | cut -d= -f2)"
+
+if [[ -n "$SPENDABLE" && "$SPENDABLE" -lt "$AMOUNT" ]]; then
+	cat >&2 <<EOF
+
+The swap server cannot cover this receive.
+
+  asked for     $AMOUNT sat
+  it can spend  $SPENDABLE sat
+
+An in-swap pays you out of swapd's own Ark liquidity. Its auto-boarder tops
+that up from chain, but the boarding output only becomes spendable once it is
+swept into a round, and on regtest that can stall with nothing to force it.
+
+Either ask for less than $SPENDABLE sat, or rebuild the stack for a fresh
+pool:
+
+  cd \$LUMOS_DIR && docker compose -f docker-compose.yml \\
+    -f docker-compose.beefbux.yml -f docker-compose.v010.yml down -v
+  $HERE/demo-up.sh regtest
+
+A rebuild resets the operator, so the wallets lose their balances and have to
+be funded again.
+EOF
+	exit 1
+fi
+
 echo "paying $AMOUNT sat from the compose stack's lnd-server..."
-docker exec ark-lnd-server lncli --network=regtest payinvoice --force --json \
-	"$INVOICE" >/dev/null
+if ! docker exec ark-lnd-server lncli --network=regtest payinvoice --force \
+	--json "$INVOICE" > "$STATE_PAYLOG" 2>&1; then
+	echo "payment failed; lncli said:" >&2
+	tail -5 "$STATE_PAYLOG" >&2
+	echo "and swapd said:" >&2
+	docker logs ark-swapd 2>&1 | grep -iE 'rejected|Failing out-swap' | tail -3 >&2
+	exit 1
+fi
 
 # The swap credits the Ark balance a moment after the Lightning leg settles.
 for _ in $(seq 1 15); do
