@@ -78,6 +78,17 @@ export default function (pi: ExtensionAPI): void {
 				contextWindow: 200_000,
 				maxTokens: 8_192,
 			},
+			{
+				// Maps to moonshotai/Kimi-K3 on the wire. Natively
+				// multimodal with a 1M-token context.
+				id: "kimi-k3",
+				name: "Kimi K3 (L402)",
+				input: ["text", "image"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 32_768,
+			},
 		],
 		streamSimple: makeStreamSimple({ payer, policy, tokenStore, receiptLog }),
 	});

@@ -28,6 +28,33 @@ interface RestWalletStream {
 	close(): void;
 }
 
+// WalletdError is a gateway error carrying the machine-readable cause the
+// daemon sent alongside the human-readable message.
+interface WalletdError extends Error {
+	rpcCode?: number;
+	reason?: string;
+}
+
+// WALLET_NOT_READY_REASON is the ErrorInfo reason waved returns while no
+// wallet has been created yet. It is the signal the bootstrap branches on to
+// tell "create one" apart from a daemon that is genuinely broken.
+const WALLET_NOT_READY_REASON = "WALLET_NOT_READY";
+
+// errorInfoReason digs the ErrorInfo reason out of a gateway error payload.
+// The gateway sends details as a list of typed Any messages, of which the
+// ErrorInfo entry is the one carrying a stable reason string.
+function errorInfoReason(payload: any): string | undefined {
+	if (!Array.isArray(payload?.details)) {
+		return undefined;
+	}
+	for (const detail of payload.details) {
+		if (typeof detail?.reason === "string" && detail.reason) {
+			return detail.reason;
+		}
+	}
+	return undefined;
+}
+
 // DEFAULT_WALLET_PASSWORD is the throwaway password used on non-mainnet dev
 // networks. Mainnet refuses to start with it (resolveWalletPassword).
 const DEFAULT_WALLET_PASSWORD = "pi402-dev-password";
@@ -66,8 +93,24 @@ export class WalletService {
 			// usable; unlocking an unlocked wallet is an error. The status
 			// probe genuinely may fail if the daemon is down, so surface that
 			// rather than treating it as "not unlocked".
-			const status = await this.rest("/v1/wallet/status", {});
-			if (!status.unlocked) {
+			//
+			// One failure is not a fault though: waved answers the probe with
+			// FailedPrecondition/WALLET_NOT_READY when no wallet has been
+			// created yet, rather than reporting an un-created wallet in the
+			// response. That is precisely the state the create path exists to
+			// resolve, so it must not abort the bootstrap the way a genuinely
+			// unreachable daemon does.
+			let unlocked = false;
+			try {
+				const status = await this.rest("/v1/wallet/status", {});
+				unlocked = Boolean(status.unlocked);
+			} catch (err) {
+				if (!isWalletMissingError(err)) {
+					throw err;
+				}
+			}
+
+			if (!unlocked) {
 				const passwordB64 = Buffer.from(password).toString("base64");
 				try {
 					await this.rest("/v1/wallet/unlock", { wallet_password: passwordB64 });
@@ -175,6 +218,37 @@ export class WalletService {
 		}
 		const res = await this.requireCall()("deposit", {});
 		return res.Address ?? res.address;
+	}
+
+	// receiveInvoice returns a BOLT11 invoice for the given amount that any
+	// Lightning wallet can pay to fund this one. The daemon sets up the
+	// inbound receive through its swap subsystem, so the funds arrive as
+	// spendable balance in seconds.
+	//
+	// This is the fast counterpart to depositAddress: an on-chain boarding
+	// deposit costs a confirmation plus an Ark round before it can be spent,
+	// which is minutes at best.
+	async receiveInvoice(amountSat: number, memo = "pi-402 wallet funding"): Promise<string> {
+		if (!Number.isInteger(amountSat) || amountSat <= 0) {
+			throw new Error(`funding amount must be a positive whole number of sats, got ${amountSat}`);
+		}
+
+		if (this.gateway) {
+			const res = await this.rest("/v1/wallet/recv", {
+				amt_sat: amountSat,
+				memo,
+			});
+			return res.invoice;
+		}
+
+		// The WASM bridge marshals the Go request struct, so its field names
+		// are PascalCase; the gateway's JSON gateway uses snake_case. Read the
+		// response tolerantly for the same reason.
+		const res = await this.requireCall()("receive", {
+			AmountSat: amountSat,
+			Memo: memo,
+		});
+		return res.Invoice ?? res.invoice;
 	}
 
 	// openWalletStreamRest opens the gateway's SubscribeWallet NDJSON stream. It
@@ -286,7 +360,14 @@ export class WalletService {
 		});
 		const payload = await res.json().catch(() => ({}));
 		if (!res.ok) {
-			throw new Error(`walletd ${path} failed (${res.status}): ${payload.message ?? ""}`);
+			const err = new Error(`walletd ${path} failed (${res.status}): ${payload.message ?? ""}`) as WalletdError;
+			// The gateway reports the machine-readable cause in an ErrorInfo
+			// detail. Carry the code and reason onto the error so callers can
+			// branch on them instead of matching prose, which changes between
+			// daemon releases in a way the wire contract does not.
+			err.rpcCode = typeof payload.code === "number" ? payload.code : undefined;
+			err.reason = errorInfoReason(payload);
+			throw err;
 		}
 		return payload;
 	}
@@ -441,6 +522,12 @@ export function preimageFromFrame(frame: any, paymentHash: string): string | und
 // to a wrong password or an unreachable daemon, which must propagate. The
 // sidecar returns a gRPC-ish code/message; the WASM path an error string.
 function isWalletMissingError(err: unknown): boolean {
+	// The structured reason is the reliable signal when the gateway sends
+	// one, so check it before falling back to matching prose.
+	if ((err as WalletdError)?.reason === WALLET_NOT_READY_REASON) {
+		return true;
+	}
+
 	const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
 	// gRPC NotFound is code 5; the message wording covers both backends.
 	return (
@@ -449,6 +536,12 @@ function isWalletMissingError(err: unknown): boolean {
 		message.includes("does not exist") ||
 		message.includes("wallet not initialized") ||
 		message.includes("wallet does not exist") ||
+		message.includes("wallet is not ready") ||
+		// Unlock on a never-created wallet reports that it is not locked.
+		// Match the state rather than that phrase alone: the same wording
+		// with any other state means the wallet exists and is already
+		// usable, which must not fall through to creating a fresh one.
+		message.includes("state=none") ||
 		/\bcode\W*5\b/.test(message)
 	);
 }

@@ -55,9 +55,10 @@ Then select the paid model and prompt:
 Wallet commands:
 
 ```
-/wallet     show wallet status and balance
-/deposit    show an on-chain boarding address to fund the wallet
-/balance    show confirmed / pending balance
+/wallet        show wallet status and balance
+/fund <sats>   show a Lightning invoice to fund the wallet (settles in seconds)
+/deposit       show an on-chain boarding address to fund the wallet
+/balance       show confirmed / pending balance
 ```
 
 ## Configuration

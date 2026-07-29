@@ -4,7 +4,7 @@
 # GET /v1/models before a real run.
 listenaddr: "127.0.0.1:10025"
 dbpath: "lightmeter.db"
-defaultmodel: "zai-org/GLM-5.2"
+defaultmodel: "moonshotai/Kimi-K3"
 bundletokens: 1000000
 refreshinterval: 15m
 models:
@@ -14,6 +14,13 @@ models:
   "zai-org/GLM-5.2":
     inputusdpermtok: 1.40
     outputusdpermtok: 4.40
+  # Kimi K3: 2.8T params, 1M context, native vision. A 1M-token bundle
+  # quotes at 11,500 sats here: the margin lifts the rates to 3.75 and
+  # 18.75 msat/token, which round up to 4 and 19, and the bundle is priced
+  # at the blended average, ceil(1_000_000 * (4 + 19) / 2 / 1000).
+  "moonshotai/Kimi-K3":
+    inputusdpermtok: 3.00
+    outputusdpermtok: 15.00
 pricing:
   marginpercent: 25
   btcusd:

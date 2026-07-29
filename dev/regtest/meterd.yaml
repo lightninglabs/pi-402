@@ -1,6 +1,11 @@
 # meterd config for the regtest e2e environment. Bundles are denominated as
-# 1M tokens; at the blended rate below one bundle quotes at 2500 sats:
-#   price_sats = ceil(1_000_000 * (1 + 4) / 2 / 1000).
+# 1M tokens and priced at the blended rate:
+#   price_sats = ceil(bundle_tokens * (input + output) / 2 / 1000).
+# GLM 4.7 quotes at 2500 sats, Kimi K3 at 11500 sats.
+#
+# meterd takes raw msat-per-token rates, so the USD conversion is done by
+# hand here; lightmeter (see lightmeter.yaml) does it from the live Baseten
+# catalog instead.
 listenaddr: "127.0.0.1:10020"
 
 bundletokens: 1000000
@@ -11,6 +16,10 @@ models:
   "zai-org/GLM-4.7":
     inputmsatpertoken: 1
     outputmsatpertoken: 4
+  # $3.00/$15.00 per MTok at a 25% margin and BTC pinned to $100k.
+  "moonshotai/Kimi-K3":
+    inputmsatpertoken: 4
+    outputmsatpertoken: 19
 
 # Balances survive meterd restarts.
 statepath: "meterd-state.json"
