@@ -128,26 +128,52 @@ run_in buyer-wallet "$(waved_cmd "$STATE/buyer-wallet" "$BUYER_RPC" "$BUYER_GATE
 wait_for "seller wallet" 45 wallet_listening "$SELLER_GATEWAY_HOST"
 wait_for "buyer wallet"  45 wallet_listening "$BUYER_GATEWAY_HOST"
 
-# Create each wallet if this is its first run. An existing wallet answers the
-# status probe cleanly and is left alone; pi unlocks the buyer itself on
-# session start.
-for pair in "seller:$SELLER_GATEWAY_HOST" "buyer:$BUYER_GATEWAY_HOST"; do
-	name="${pair%%:*}"; host="${pair#*:}"
-	if ! wallet_up "$host"; then
-		echo "    creating the $name wallet"
-		curl -sf --max-time 60 -X POST "http://$host/v1/wallet/create" \
-			-H 'Content-Type: application/json' \
-			-d "{\"wallet_password\":\"$(printf %s "$PI402_WALLET_PASSWORD" | base64)\"}" \
-			-o "$STATE/$name-wallet-created.json" \
-			|| die "could not create the $name wallet"
-	fi
-done
+# Bring each wallet to a usable state, creating one only on the very first run.
+#
+# Order matters here. The status probe answers WALLET_NOT_READY both when no
+# wallet exists and when one exists but is locked, and the two differ only in
+# the prose ("create first" vs "unlock first"). So unlock is tried first and
+# create is reached only when unlock reports there is no wallet at all
+# (state=none). Reading a failed probe as "no wallet" instead would try to
+# create one over an existing wallet on every restart.
+ensure_wallet() {
+	local name="$1" host="$2"
+	local pw body code
+	pw="$(printf %s "$PI402_WALLET_PASSWORD" | base64)"
 
-# The seller wallet has to be unlocked before aperture can mint from it.
-curl -s --max-time 30 -X POST "http://$SELLER_GATEWAY_HOST/v1/wallet/unlock" \
-	-H 'Content-Type: application/json' \
-	-d "{\"wallet_password\":\"$(printf %s "$PI402_WALLET_PASSWORD" | base64)\"}" \
-	-o /dev/null || true
+	if wallet_up "$host"; then
+		echo "    $name wallet already unlocked"
+		return 0
+	fi
+
+	body="$STATE/.$name-unlock.json"
+	code="$(curl -s -o "$body" -w '%{http_code}' --max-time 60 \
+		-X POST "http://$host/v1/wallet/unlock" \
+		-H 'Content-Type: application/json' \
+		-d "{\"wallet_password\":\"$pw\"}")"
+
+	if [[ "$code" == "200" ]]; then
+		echo "    $name wallet unlocked"
+		return 0
+	fi
+
+	if ! grep -q 'state=none' "$body" 2>/dev/null; then
+		die "could not unlock the $name wallet: $(cat "$body" 2>/dev/null)"
+	fi
+
+	echo "    creating the $name wallet"
+	curl -sf --max-time 120 -X POST "http://$host/v1/wallet/create" \
+		-H 'Content-Type: application/json' \
+		-d "{\"wallet_password\":\"$pw\"}" \
+		-o "$STATE/$name-wallet-created.json" \
+		|| die "could not create the $name wallet"
+}
+
+# The seller has to be usable before aperture can mint from it; pi unlocks the
+# buyer itself on session start, but doing it here keeps the two symmetric and
+# surfaces a bad password now rather than mid-demo.
+ensure_wallet seller "$SELLER_GATEWAY_HOST"
+ensure_wallet buyer "$BUYER_GATEWAY_HOST"
 
 say "starting aperture"
 run_in aperture "cd $STATE && $APERTURE_BIN --configfile=$HERE/$APERTURE_CONFIG 2>&1 | tee $STATE/aperture.log"
