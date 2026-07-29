@@ -1,4 +1,4 @@
-import { createPayingFetch, TokenCache } from "@aperture/client";
+import { type ClientReceipt, createPayingFetch, TokenCache, type TokenStore } from "@aperture/client";
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
 import {
 	type Api,
@@ -10,10 +10,21 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
+import type { ReceiptRecord } from "./store.ts";
 
 export interface StreamDeps {
 	payer: InvoicePayer;
 	policy: BuyerPolicy;
+
+	// tokenStore holds paid L402 tokens. A durable store means paid bundles
+	// survive process restarts; when absent, tokens live in memory and die
+	// with the process.
+	tokenStore?: TokenStore;
+
+	// receiptLog receives one record per settled payment, stamped with the
+	// model the payment bought inference for. Absent in mock mode, so fake
+	// spends never pollute the real ledger.
+	receiptLog?: { store(receipt: ReceiptRecord): Promise<void> | void };
 }
 
 // BASETEN_MODEL_SLUGS maps the Pi-facing model ids (kept slash-free so they
@@ -30,6 +41,39 @@ function wireModelId(id: string): string {
 	return BASETEN_MODEL_SLUGS[id] ?? id;
 }
 
+// requestUrl extracts the URL from any of the shapes fetch accepts, without
+// consuming the request body.
+function requestUrl(input: RequestInfo | URL): string {
+	if (typeof input === "string") {
+		return input;
+	}
+	if (input instanceof URL) {
+		return input.href;
+	}
+	return input.url;
+}
+
+// tokenRouteId scopes a cached L402 token to one model.
+//
+// The token cache keys on origin + routeId + method, and routeId defaults to
+// the request path. Every model this provider registers posts to the same
+// /v1/chat/completions path, so without the model in the key they all share
+// one cache slot: paying for model B would overwrite the token for model A and
+// strand A's unspent bundle balance, since the macaroon and preimage needed to
+// present it are gone. The seller already refuses to spend one model's bundle
+// on another, so the buyer must track them separately too.
+export function tokenRouteId(input: RequestInfo | URL, model: string): string {
+	let path: string;
+	try {
+		path = new URL(requestUrl(input)).pathname;
+	} catch {
+		// A URL we cannot parse still needs a stable key; the model alone
+		// keeps distinct models from sharing a token.
+		path = "";
+	}
+	return `${path}|${model}`;
+}
+
 // makeStreamSimple builds the paid provider's streamSimple. The returned
 // function owns the entire request path to the L402 proxy: it constructs an
 // OpenAI client whose fetch is a paying fetch, so 402 challenges are paid and
@@ -37,8 +81,9 @@ function wireModelId(id: string): string {
 // stream.
 export function makeStreamSimple(deps: StreamDeps) {
 	// One token cache per provider instance, so paid L402 tokens are reused
-	// across calls until they expire.
-	const tokenCache = new TokenCache();
+	// across calls until they expire. With a durable store injected, reuse
+	// extends across processes too.
+	const tokenCache = deps.tokenStore ?? new TokenCache();
 
 	return function streamSimple(
 		model: Model<Api>,
@@ -51,18 +96,38 @@ export function makeStreamSimple(deps: StreamDeps) {
 			const output = emptyAssistantMessage(model);
 
 			try {
+				// The receipt adapter stamps each settled payment with the
+				// model it bought inference for. It is built per call, so
+				// the model rides in via closure without threading through
+				// the buyer loop.
+				const receiptLog = deps.receiptLog;
+				const receiptCache = receiptLog
+					? {
+							store: (receipt: ClientReceipt) => receiptLog.store({ ...receipt, model: wireModelId(model.id) }),
+						}
+					: undefined;
+
 				// The paying fetch runs the L402 buyer loop: detect 402, assert the
 				// budget policy, pay via the wallet, cache the token, and retry.
 				const payingFetch = createPayingFetch({
 					payer: deps.payer,
 					buyerPolicy: deps.policy,
 					tokenCache,
+					receiptCache,
 				});
+
+				const wireModel = wireModelId(model.id);
 
 				const client = new OpenAI({
 					baseURL: model.baseUrl,
 					apiKey: "unused",
-					fetch: payingFetch as typeof fetch,
+					// Scope the cached token to this model, so one model's
+					// paid bundle is never overwritten by another's payment.
+					fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+						payingFetch(input, {
+							...init,
+							routeId: tokenRouteId(input, wireModel),
+						})) as typeof fetch,
 					// The paying fetch owns retry semantics: it runs the L402
 					// buyer loop and retries exactly once after payment. The
 					// SDK's default of two retries would re-enter payingFetch on

@@ -20,8 +20,11 @@ Ships as a single extension — Pi core is not modified.
 - `src/wallet.ts` — `WalletService`: loads and unlocks the walletdk WASM, exposes
   balance / boarding address / `payInvoice`.
 - `src/policy.ts` — budget policy (per-request and daily ceilings) over
-  `@aperture/core`.
-- `src/commands.ts` — `/wallet`, `/deposit`, `/balance` slash commands.
+  `@aperture/core`; the daily counter seeds from the receipt ledger.
+- `src/store.ts` — durable state under `PI402_DATA_DIR` (default `~/.pi402`):
+  the paid-token cache and the append-only payment receipt ledger.
+- `src/commands.ts` — `/wallet`, `/deposit`, `/balance`, `/receipts` slash
+  commands.
 
 ## Relationships
 

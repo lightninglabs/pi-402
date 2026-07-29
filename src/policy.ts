@@ -39,22 +39,49 @@ function utcDayKey(now: Date): string {
 	return now.toISOString().slice(0, 10);
 }
 
+// SpentTodaySource supplies the sats already spent on the current UTC day,
+// typically summed from the durable receipt ledger.
+export interface SpentTodaySource {
+	spentTodaySat(): Promise<number>;
+}
+
 // buildBudgetPolicy constructs the buyer policy from environment ceilings. The
 // policy is asserted before any wallet action, on the quoted total outflow
 // (invoice principal plus swap fee), so a runaway session cannot drain the
 // wallet.
-export function buildBudgetPolicy(_pi: ExtensionAPI): BuyerPolicy {
+//
+// With a spentToday source, the ledger is read fresh on every assertion and
+// combined with the in-memory counter, so neither a restart nor a concurrent
+// session can reset the day's spend to zero.
+export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTodaySource): BuyerPolicy {
 	const perRequestCap = maxSatPerRequest();
 	const dailyCapSat = readSatCeiling("PI402_DAILY_CAP_SAT", DEFAULT_DAILY_CAP_SAT);
 
 	// spentToday tracks cumulative spend for the daily ceiling, reset at the UTC
-	// day boundary. It is process local; a durable ledger keyed by wallet is
-	// future work.
+	// day boundary.
 	let spentToday = 0;
 	let currentDay = utcDayKey(new Date());
 
 	return {
 		async assertAllowed(ctx: { amountSat: number; host: string; url: string; routeId?: string }): Promise<void> {
+			// Read the ledger fresh on every assertion: it is the shared
+			// ground truth across restarts and concurrent sessions. Payments
+			// are rare and the file is small, so the read is cheap. An
+			// unreadable ledger degrades to the in-memory counter alone; the
+			// degradation is logged because a spend cap silently losing its
+			// memory should never be invisible.
+			let ledgerToday = 0;
+			if (spentTodaySource) {
+				try {
+					ledgerToday = await spentTodaySource.spentTodaySat();
+				} catch (err) {
+					console.warn("pi-402: receipt ledger unreadable, daily cap using in-memory spend only:", err);
+				}
+			}
+
+			// Everything below is synchronous, so concurrent assertions in
+			// this process cannot interleave between the check and the
+			// counter update.
 			const day = utcDayKey(new Date());
 			if (day !== currentDay) {
 				currentDay = day;
@@ -64,7 +91,22 @@ export function buildBudgetPolicy(_pi: ExtensionAPI): BuyerPolicy {
 			if (ctx.amountSat > perRequestCap) {
 				throw new Error(`payment ${ctx.amountSat} sat exceeds per-request cap ${perRequestCap} sat`);
 			}
-			if (spentToday + ctx.amountSat > dailyCapSat) {
+
+			// The in-memory counter carries in-flight amounts the ledger
+			// cannot see yet (and quotes for payments that later failed);
+			// the ledger carries settled spends from other sessions this
+			// counter never saw. Take the max: it is conservative under
+			// either gap. Units differ slightly, quoted face value in the
+			// counter vs fee-inclusive paidSat in the ledger, which also
+			// errs on the conservative side.
+			//
+			// The residual overshoot bound across sessions is the sum of
+			// all in-flight (asserted, not yet settled) amounts in OTHER
+			// processes, each bounded by their per-request cap; unsettled
+			// spends are invisible to this process until they reach the
+			// ledger.
+			const effectiveSpent = Math.max(spentToday, ledgerToday);
+			if (effectiveSpent + ctx.amountSat > dailyCapSat) {
 				throw new Error(`payment would exceed daily cap ${dailyCapSat} sat`);
 			}
 
@@ -74,7 +116,7 @@ export function buildBudgetPolicy(_pi: ExtensionAPI): BuyerPolicy {
 			// back off the daily counter. This errs conservative (a failed
 			// payment still consumes budget), which is the safe direction for a
 			// spend cap; a clean rollback needs a hook the library does not offer.
-			spentToday += ctx.amountSat;
+			spentToday = effectiveSpent + ctx.amountSat;
 		},
 	};
 }
