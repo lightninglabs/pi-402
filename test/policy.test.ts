@@ -91,6 +91,68 @@ test("daily cap rejects once cumulative spend would exceed it", async () => {
 	await policy.assertAllowed(ctx(50));
 });
 
+test("daily cap counts the ledger's spend on every assertion", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// The ledger says 100 sats already went out today (a prior process), so
+	// only 50 remain under the cap.
+	const policy = buildBudgetPolicy(pi, { spentTodaySat: async () => 100 });
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+	await policy.assertAllowed(ctx(50));
+});
+
+test("concurrent first assertions cannot race past the ledger", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// A slow ledger read must not open a window where a second concurrent
+	// assertion sees a stale base and slips under the cap.
+	const slowLedger = {
+		spentTodaySat: () => new Promise<number>((resolve) => setTimeout(() => resolve(100), 20)),
+	};
+	const policy = buildBudgetPolicy(pi, slowLedger);
+
+	// The amounts are chosen so the two outcomes actually differ. With the
+	// ledger at 100 and the cap at 150, exactly one 30-sat payment fits.
+	// Under a check-then-update interleaving both assertions would read the
+	// ledger's 100 before either incremented, both would compute 130, and
+	// both would be allowed. Asserting one-of-each is what catches that; two
+	// 60-sat payments would be rejected either way and prove nothing.
+	const results = await Promise.allSettled([policy.assertAllowed(ctx(30)), policy.assertAllowed(ctx(30))]);
+	const statuses = results.map((r) => r.status).sort();
+	assert.deepEqual(statuses, ["fulfilled", "rejected"]);
+});
+
+test("a ledger that grows behind the process's back still counts", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	// Another session settles 120 sats between our assertions; the fresh
+	// read on the next assertion must pick it up.
+	let ledgerTotal = 0;
+	const policy = buildBudgetPolicy(pi, { spentTodaySat: async () => ledgerTotal });
+
+	await policy.assertAllowed(ctx(20));
+	ledgerTotal = 120;
+	await assert.rejects(() => policy.assertAllowed(ctx(40)), /exceed daily cap/);
+});
+
+test("an unreadable ledger degrades to the in-memory counter", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
+	process.env.PI402_DAILY_CAP_SAT = "150";
+
+	const policy = buildBudgetPolicy(pi, {
+		spentTodaySat: async () => {
+			throw new Error("ledger unreadable");
+		},
+	});
+	// A broken ledger must not block inference; the caps still apply from
+	// the in-memory counter.
+	await policy.assertAllowed(ctx(100));
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+});
+
 test("daily counter resets at the UTC day boundary", async () => {
 	process.env.PI402_MAX_SAT_PER_REQUEST = "100";
 	process.env.PI402_DAILY_CAP_SAT = "100";

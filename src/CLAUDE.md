@@ -18,19 +18,26 @@ model provider backed by an embedded walletdk wallet.
   `WalletInvoicePayer` (delegates to `WalletService`).
 - `wallet.ts` — `WalletService`: the embedded walletdk WASM wrapper
   (`prepareSend` → `sendPrepared` → await preimage; balance; boarding address).
-- `policy.ts` — `buildBudgetPolicy`: per-request and daily spend ceilings.
-- `commands.ts` — `/wallet`, `/fund`, `/deposit`, `/balance`. Two funding
-  paths: `/fund <sats>` returns a BOLT11 invoice (walletdk `receive`, settled
-  through an inbound swap in seconds), `/deposit` returns an on-chain boarding
-  address (a confirmation plus an Ark round before it is spendable).
+- `policy.ts` — `buildBudgetPolicy`: per-request and daily spend ceilings; the
+  daily counter seeds from the receipt ledger on first assertion.
+- `store.ts` — durable state under `PI402_DATA_DIR` (default `~/.pi402`):
+  `FileTokenStore` (paid L402 tokens, atomic rewrite, 0600) and
+  `FileReceiptLog` (append-only NDJSON spend ledger).
+- `commands.ts` — `/wallet`, `/fund`, `/deposit`, `/balance`, `/receipts`. Two
+  funding paths: `/fund <sats>` returns a BOLT11 invoice (walletdk `receive`,
+  settled through an inbound swap in seconds), `/deposit` returns an on-chain
+  boarding address (a confirmation plus an Ark round before it is spendable).
 
 ## Invariants
 
 - `streamSimple` owns the whole request path; payment is injected here, nowhere
   in Pi core. The OpenAI client sets `maxRetries: 0` so the paying fetch owns
   retry semantics and the SDK never re-enters it to double-pay.
-- The token cache is per provider instance, so paid tokens are reused until
-  expiry and retries never re-pay.
+- The token cache is per provider instance and file-backed outside mock mode,
+  so paid tokens are reused until expiry, across process restarts, and retries
+  never re-pay. Every settled payment appends a self-verifying receipt
+  (`sha256(preimage) == payment_hash`) to the ledger; mock-mode spends never
+  touch either file.
 - The budget policy runs before any wallet action, and the wallet re-asserts the
   per-request ceiling on the *quoted total outflow* (invoice principal plus swap
   fee) after `prepareSend`, before dispatching `send`/`sendPrepared`.

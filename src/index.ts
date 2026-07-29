@@ -1,8 +1,10 @@
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerWalletCommands } from "./commands.ts";
+import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
 import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
 import { makeStreamSimple } from "./provider.ts";
+import { dataDir, FileReceiptLog, FileTokenStore } from "./store.ts";
 import { WalletService } from "./wallet.ts";
 
 // PROVIDER_ID is the model provider this extension registers. Users select it
@@ -26,7 +28,17 @@ export default function (pi: ExtensionAPI): void {
 	const mockMode = process.env.PI402_MOCK_PAYER === "1";
 	const payer = mockMode ? new MockInvoicePayer() : new WalletInvoicePayer(wallet);
 
-	const policy = buildBudgetPolicy(pi);
+	// Durable state: paid tokens and the receipt ledger live under the data
+	// dir, so a paid bundle survives a restart instead of being re-purchased
+	// and every spend leaves an auditable record. Mock mode stays in-memory,
+	// keeping fake spends out of the real ledger.
+	const stateDir = dataDir();
+	const tokenStore = mockMode ? undefined : new FileTokenStore(join(stateDir, "tokens.json"));
+	const receiptLog = mockMode ? undefined : new FileReceiptLog(join(stateDir, "receipts.ndjson"));
+
+	// The daily cap is seeded from the ledger, so a restart mid-day cannot
+	// reset the day's spend to zero.
+	const policy = buildBudgetPolicy(pi, receiptLog);
 
 	// Bootstrap the wallet once per session. In mock mode there is no wallet
 	// to load, so the session starts without touching the WASM at all.
@@ -78,8 +90,11 @@ export default function (pi: ExtensionAPI): void {
 				maxTokens: 32_768,
 			},
 		],
-		streamSimple: makeStreamSimple({ payer, policy }),
+		streamSimple: makeStreamSimple({ payer, policy, tokenStore, receiptLog }),
 	});
 
 	registerWalletCommands(pi, wallet);
+	if (receiptLog) {
+		registerReceiptCommands(pi, receiptLog);
+	}
 }
