@@ -12,8 +12,9 @@ model provider backed by an embedded walletdk wallet.
   commands.
 - `provider.ts` — `makeStreamSimple`: the provider's `streamSimple`. Builds an
   OpenAI client whose `fetch` is `createPayingFetch(...)` and translates the
-  OpenAI SSE stream into Pi's `AssistantMessageEventStream`. This is the seam
-  that injects payment without touching Pi core.
+  OpenAI SSE stream into Pi's `AssistantMessageEventStream`, text, reasoning
+  and tool calls alike (`BlockWriter`). This is the seam that injects payment
+  without touching Pi core.
 - `payer.ts` — `InvoicePayer` implementations: `MockInvoicePayer` (dev) and
   `WalletInvoicePayer` (delegates to `WalletService`).
 - `wallet.ts` — `WalletService`: the embedded walletdk WASM wrapper
@@ -44,9 +45,11 @@ model provider backed by an embedded walletdk wallet.
 
 ## Status / TODO
 
-- `provider.ts` handles the text streaming path only; tool calls, reasoning, and
-  usage mapping beyond `finish_reason: length` are milestone-2 work (mirror
-  `custom-provider-anthropic`).
+- `provider.ts` streams text, reasoning and tool calls. Declaring Pi's tools on
+  the request is not optional: Pi's system prompt tells the model it has tools
+  either way, so a request that omits them leaves a model like Kimi K3 emitting
+  its own native tool-call syntax as ordinary assistant text. Images on the
+  input side are still unmapped.
 - `wallet.ts` implements both backends: the sidecar HTTP/JSON gateway
   (`PI402_WALLETD_GATEWAY`) and the embedded WASM bridge. Both run
   `prepareSend` → open settle stream → `send`/`sendPrepared` → read preimage.

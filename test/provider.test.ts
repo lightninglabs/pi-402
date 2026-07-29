@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { tokenRouteId } from "../src/provider.ts";
+import { parseToolArguments, toOpenAiMessages, toOpenAiTools, tokenRouteId } from "../src/provider.ts";
 
 const CHAT = "http://localhost:8404/v1/chat/completions";
 
@@ -42,4 +42,91 @@ test("tokenRouteId still separates models when the URL is unparseable", () => {
 	const glm = tokenRouteId("not a url", "zai-org/GLM-4.7");
 
 	assert.notEqual(kimi, glm);
+});
+
+test("toOpenAiTools declares Pi's tools to the model", () => {
+	// Declaring tools is what keeps a thinking model from inventing its own
+	// call syntax. Pi's system prompt tells the model it has tools whether or
+	// not the request carries them, so a request without them leaves the
+	// model emitting native tool-call markup as ordinary assistant text,
+	// which is what the user then reads on screen.
+	const tools = toOpenAiTools({
+		messages: [],
+		tools: [{ name: "bash", description: "Run a command", parameters: { type: "object" } as never }],
+	});
+
+	assert.equal(tools?.length, 1);
+	assert.equal(tools?.[0].type, "function");
+	assert.equal(tools?.[0].function.name, "bash");
+});
+
+test("toOpenAiTools sends nothing when Pi offers no tools", () => {
+	// An empty tools array is not the same as omitting the field: some
+	// upstreams reject it outright.
+	assert.equal(toOpenAiTools({ messages: [] }), undefined);
+	assert.equal(toOpenAiTools({ messages: [], tools: [] }), undefined);
+});
+
+test("toOpenAiMessages replays the tool-call round trip", () => {
+	// A tool result that names no call is a result answering nothing. The
+	// model resolves that by calling the same tool again, so the agent loops
+	// instead of finishing. Pin down that both halves survive the conversion.
+	const messages = toOpenAiMessages({
+		systemPrompt: "be useful",
+		messages: [
+			{ role: "user", content: "write a file", timestamp: 0 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "on it" },
+					{ type: "toolCall", id: "call_1", name: "write", arguments: { path: "a.txt" } },
+				],
+				timestamp: 0,
+			} as never,
+			{
+				role: "toolResult",
+				toolCallId: "call_1",
+				toolName: "write",
+				content: [{ type: "text", text: "written" }],
+				isError: false,
+				timestamp: 0,
+			} as never,
+		],
+	});
+
+	assert.equal(messages[0].role, "system");
+	assert.equal(messages[1].role, "user");
+
+	const assistant = messages[2] as { role: string; tool_calls?: Array<{ id: string; function: { arguments: string } }> };
+	assert.equal(assistant.role, "assistant");
+	assert.equal(assistant.tool_calls?.[0].id, "call_1");
+	// Arguments go back over the wire as a JSON string, not an object.
+	assert.equal(assistant.tool_calls?.[0].function.arguments, JSON.stringify({ path: "a.txt" }));
+
+	const result = messages[3] as { role: string; tool_call_id: string; content: string };
+	assert.equal(result.role, "tool");
+	assert.equal(result.tool_call_id, "call_1");
+	assert.equal(result.content, "written");
+});
+
+test("toOpenAiMessages drops an assistant turn carrying neither text nor calls", () => {
+	// An empty assistant turn contributes nothing and is rejected outright by
+	// some upstreams, which would fail the whole request.
+	const messages = toOpenAiMessages({
+		messages: [{ role: "assistant", content: [], timestamp: 0 } as never],
+	});
+
+	assert.deepEqual(messages, []);
+});
+
+test("parseToolArguments survives a run the model never finished", () => {
+	// Arguments arrive as JSON fragments across many chunks, so a truncated
+	// or malformed run is a live possibility. Failing the whole turn over it
+	// reads far worse than letting the tool reject an empty call.
+	assert.deepEqual(parseToolArguments('{"path":"a.txt"}'), { path: "a.txt" });
+	assert.deepEqual(parseToolArguments(""), {});
+	assert.deepEqual(parseToolArguments('{"path":'), {});
+	// A bare array or scalar is not a valid argument object either.
+	assert.deepEqual(parseToolArguments("[1,2]"), {});
+	assert.deepEqual(parseToolArguments('"hi"'), {});
 });

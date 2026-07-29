@@ -139,10 +139,13 @@ export function makeStreamSimple(deps: StreamDeps) {
 					maxRetries: 0,
 				});
 
+				const tools = toOpenAiTools(context);
+
 				const sse = await client.chat.completions.create(
 					{
 						model: wireModelId(model.id),
 						messages: toOpenAiMessages(context),
+						...(tools ? { tools } : {}),
 						max_tokens: options?.maxTokens ?? Math.floor(model.maxTokens / 3),
 						stream: true,
 						// Baseten defaults include_usage to true, but ask
@@ -156,19 +159,33 @@ export function makeStreamSimple(deps: StreamDeps) {
 
 				stream.push({ type: "start", partial: output });
 
-				// TODO(milestone-2): translate the full OpenAI streaming surface
-				// (tool calls, reasoning) into AssistantMessageEvents. The
-				// custom-provider-anthropic example is the reference for the
-				// complete mapping; this handles text and usage for now.
+				const blocks = new BlockWriter(output, stream);
+
 				for await (const chunk of sse) {
-					const delta = chunk.choices[0]?.delta?.content ?? "";
-					if (delta) {
-						appendText(output, stream, delta);
+					const choice = chunk.choices[0];
+					const delta = choice?.delta as OpenAiDelta | undefined;
+
+					// Reasoning arrives first and, on a thinking model, can
+					// run for most of the response. Surfacing it as thinking
+					// content is what keeps the turn from looking hung while
+					// the model works.
+					if (delta?.reasoning_content) {
+						blocks.appendThinking(delta.reasoning_content);
 					}
 
-					const finish = chunk.choices[0]?.finish_reason;
+					if (delta?.content) {
+						blocks.appendText(delta.content);
+					}
+
+					for (const call of delta?.tool_calls ?? []) {
+						blocks.appendToolCall(call);
+					}
+
+					const finish = choice?.finish_reason;
 					if (finish === "length") {
 						output.stopReason = "length";
+					} else if (finish === "tool_calls") {
+						output.stopReason = "toolUse";
 					}
 
 					// Usage arrives on the final chunk (and, on Baseten,
@@ -178,7 +195,24 @@ export function makeStreamSimple(deps: StreamDeps) {
 						output.usage.input = chunk.usage.prompt_tokens ?? 0;
 						output.usage.output = chunk.usage.completion_tokens ?? 0;
 						output.usage.totalTokens = chunk.usage.total_tokens ?? 0;
+
+						const reasoning = (chunk.usage as { completion_tokens_details?: { reasoning_tokens?: number } })
+							.completion_tokens_details?.reasoning_tokens;
+						if (typeof reasoning === "number") {
+							output.usage.reasoning = reasoning;
+						}
 					}
+				}
+
+				blocks.close();
+
+				// A model can emit tool calls without the upstream setting the
+				// matching finish_reason. Pi routes on the stop reason, so
+				// derive it from what actually arrived rather than trusting
+				// the flag: a missed toolUse ends the turn holding calls
+				// nobody runs.
+				if (output.stopReason !== "toolUse" && output.content.some((part) => part.type === "toolCall")) {
+					output.stopReason = "toolUse";
 				}
 
 				stream.push({
@@ -228,34 +262,263 @@ function emptyAssistantMessage(model: Model<Api>): AssistantMessage {
 	};
 }
 
-// toOpenAiMessages converts Pi's context into OpenAI chat messages. This is a
-// minimal text-only projection; the full converter handles images, tool calls,
-// and tool results.
-function toOpenAiMessages(context: Context): Array<{ role: "system" | "user" | "assistant"; content: string }> {
-	const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+// toOpenAiTools projects Pi's tool declarations into the OpenAI function-tool
+// schema. Declaring the tools matters beyond enabling tool use: Pi's system
+// prompt tells the model it has tools regardless, so a model that is not given
+// them in the request still tries to call them, and emits its own native
+// tool-call syntax as ordinary assistant text. That markup is what the user
+// ends up reading. Sending the declarations is what moves those calls onto the
+// structured tool_calls channel where they can be translated.
+export function toOpenAiTools(context: Context): OpenAI.Chat.Completions.ChatCompletionTool[] | undefined {
+	if (!context.tools?.length) {
+		return undefined;
+	}
+	return context.tools.map((tool) => ({
+		type: "function" as const,
+		function: {
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as unknown as Record<string, unknown>,
+		},
+	}));
+}
+
+// textOf flattens a Pi message content array down to its text parts.
+function textOf(content: unknown): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter((part) => (part as { type?: string })?.type === "text")
+		.map((part) => (part as { text: string }).text)
+		.join("");
+}
+
+// toOpenAiMessages converts Pi's context into OpenAI chat messages, including
+// the tool-call round trip: an assistant turn that called tools has to be
+// replayed with those calls attached, and each result has to come back as a
+// tool message naming the call it answers. Dropping either half leaves the
+// model looking at a request whose tool results answer nothing, which it
+// resolves by calling the same tool again.
+export function toOpenAiMessages(context: Context): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+	const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 	if (context.systemPrompt) {
 		messages.push({ role: "system", content: context.systemPrompt });
 	}
+
 	for (const msg of context.messages) {
-		if (msg.role === "user" || msg.role === "assistant") {
-			const content = typeof msg.content === "string" ? msg.content : "";
+		if (msg.role === "user") {
+			const content = textOf(msg.content);
 			if (content.trim()) {
-				messages.push({ role: msg.role, content });
+				messages.push({ role: "user", content });
 			}
+			continue;
+		}
+
+		if (msg.role === "assistant") {
+			const content = textOf(msg.content);
+			const toolCalls = (Array.isArray(msg.content) ? msg.content : [])
+				.filter((part) => (part as { type?: string })?.type === "toolCall")
+				.map((part) => {
+					const call = part as { id: string; name: string; arguments: Record<string, unknown> };
+					return {
+						id: call.id,
+						type: "function" as const,
+						function: {
+							name: call.name,
+							arguments: JSON.stringify(call.arguments ?? {}),
+						},
+					};
+				});
+
+			// An assistant turn with neither text nor calls carries nothing
+			// the model can use, and an empty turn is rejected outright by
+			// some upstreams.
+			if (!content.trim() && toolCalls.length === 0) {
+				continue;
+			}
+
+			messages.push({
+				role: "assistant",
+				content: content || null,
+				...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+			} as OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam);
+			continue;
+		}
+
+		if (msg.role === "toolResult") {
+			messages.push({
+				role: "tool",
+				tool_call_id: msg.toolCallId,
+				content: textOf(msg.content) || (msg.isError ? "error" : ""),
+			});
 		}
 	}
+
 	return messages;
 }
 
-// appendText appends a streamed text delta to the output message, opening a text
-// block on first use.
-function appendText(output: AssistantMessage, stream: AssistantMessageEventStream, delta: string): void {
-	let block = output.content[output.content.length - 1] as { type: string; text: string } | undefined;
-	if (!block || block.type !== "text") {
-		output.content.push({ type: "text", text: "" } as never);
-		block = output.content[output.content.length - 1] as { type: string; text: string };
-		stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+// OpenAiDelta is the streaming delta this provider reads. The SDK's own type
+// omits reasoning_content, which is where thinking models put the bulk of a
+// response.
+interface OpenAiDelta {
+	content?: string | null;
+	reasoning_content?: string | null;
+	tool_calls?: Array<{
+		index: number;
+		id?: string;
+		function?: { name?: string; arguments?: string };
+	}>;
+}
+
+// BlockWriter turns a flat run of streaming deltas into Pi's content blocks.
+//
+// Pi's event protocol is bracketed: every block is opened, filled, and closed,
+// and the index in each event has to address the block it belongs to. A
+// response interleaves reasoning, text, and tool calls, so this tracks which
+// block is currently open and closes it before opening the next kind. Tool
+// call arguments are the awkward part: they arrive as JSON fragments across
+// many chunks and are only parseable once the whole run has landed, so the raw
+// text is buffered and parsed at close.
+class BlockWriter {
+	private readonly output: AssistantMessage;
+	private readonly stream: AssistantMessageEventStream;
+
+	// open is the block currently accepting deltas, if any.
+	private open: { kind: "text" | "thinking" | "toolCall"; index: number } | undefined;
+
+	// rawArguments buffers each tool call's argument fragments, keyed by the
+	// content index of its block.
+	private readonly rawArguments = new Map<number, string>();
+
+	// toolIndexToContent maps the upstream tool_calls[].index onto the content
+	// block holding that call, so later fragments reach the right one.
+	private readonly toolIndexToContent = new Map<number, number>();
+
+	constructor(output: AssistantMessage, stream: AssistantMessageEventStream) {
+		this.output = output;
+		this.stream = stream;
 	}
-	block.text += delta;
-	stream.push({ type: "text_delta", contentIndex: output.content.length - 1, delta, partial: output });
+
+	appendText(delta: string): void {
+		const index = this.ensure("text", () => ({ type: "text", text: "" }));
+		(this.output.content[index] as { text: string }).text += delta;
+		this.stream.push({ type: "text_delta", contentIndex: index, delta, partial: this.output });
+	}
+
+	appendThinking(delta: string): void {
+		const index = this.ensure("thinking", () => ({ type: "thinking", thinking: "" }));
+		(this.output.content[index] as { thinking: string }).thinking += delta;
+		this.stream.push({ type: "thinking_delta", contentIndex: index, delta, partial: this.output });
+	}
+
+	appendToolCall(call: { index: number; id?: string; function?: { name?: string; arguments?: string } }): void {
+		let contentIndex = this.toolIndexToContent.get(call.index);
+
+		if (contentIndex === undefined) {
+			this.close();
+			this.output.content.push({
+				type: "toolCall",
+				// The id is what the tool result is matched back to, so a
+				// call that arrives without one still needs a stable
+				// stand-in rather than an empty string shared by every call.
+				id: call.id ?? `call_${call.index}`,
+				name: call.function?.name ?? "",
+				arguments: {},
+			} as never);
+			contentIndex = this.output.content.length - 1;
+			this.toolIndexToContent.set(call.index, contentIndex);
+			this.rawArguments.set(contentIndex, "");
+			this.open = { kind: "toolCall", index: contentIndex };
+			this.stream.push({ type: "toolcall_start", contentIndex, partial: this.output });
+		} else if (this.open?.index !== contentIndex) {
+			// Fragments for a call resumed after another block opened.
+			this.close();
+			this.open = { kind: "toolCall", index: contentIndex };
+		}
+
+		const block = this.output.content[contentIndex] as { id: string; name: string };
+		if (call.id) {
+			block.id = call.id;
+		}
+		if (call.function?.name) {
+			block.name = call.function.name;
+		}
+
+		const fragment = call.function?.arguments ?? "";
+		if (fragment) {
+			this.rawArguments.set(contentIndex, (this.rawArguments.get(contentIndex) ?? "") + fragment);
+			this.stream.push({ type: "toolcall_delta", contentIndex, delta: fragment, partial: this.output });
+		}
+	}
+
+	// close ends the open block, emitting the matching end event.
+	close(): void {
+		if (!this.open) {
+			return;
+		}
+		const { kind, index } = this.open;
+		this.open = undefined;
+
+		if (kind === "text") {
+			const content = (this.output.content[index] as { text: string }).text;
+			this.stream.push({ type: "text_end", contentIndex: index, content, partial: this.output });
+			return;
+		}
+
+		if (kind === "thinking") {
+			const content = (this.output.content[index] as { thinking: string }).thinking;
+			this.stream.push({ type: "thinking_end", contentIndex: index, content, partial: this.output });
+			return;
+		}
+
+		const block = this.output.content[index] as { arguments: Record<string, unknown> };
+		block.arguments = parseToolArguments(this.rawArguments.get(index) ?? "");
+		this.stream.push({
+			type: "toolcall_end",
+			contentIndex: index,
+			toolCall: this.output.content[index] as never,
+			partial: this.output,
+		});
+	}
+
+	// ensure returns the index of the open block of the given kind, opening one
+	// when the current block is of another kind.
+	private ensure(kind: "text" | "thinking", make: () => object): number {
+		if (this.open?.kind === kind) {
+			return this.open.index;
+		}
+		this.close();
+		this.output.content.push(make() as never);
+		const index = this.output.content.length - 1;
+		this.open = { kind, index };
+		this.stream.push({
+			type: kind === "text" ? "text_start" : "thinking_start",
+			contentIndex: index,
+			partial: this.output,
+		});
+		return index;
+	}
+}
+
+// parseToolArguments turns the accumulated argument text into an object. A
+// model can stream arguments that never parse, and an empty run is normal for
+// a no-argument tool. Neither is worth failing the whole turn over: an empty
+// object lets the tool reject the call on its own terms, which reads better
+// than the stream erroring out.
+export function parseToolArguments(raw: string): Record<string, unknown> {
+	const text = raw.trim();
+	if (!text) {
+		return {};
+	}
+	try {
+		const parsed = JSON.parse(text);
+		return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+	} catch {
+		console.warn("pi-402: tool call arguments did not parse as JSON, passing an empty object:", text);
+		return {};
+	}
 }
