@@ -107,7 +107,7 @@ test("FileReceiptLog reads an empty total from a missing file", async () => {
 	assert.equal(await log.spentTodaySat(), 0);
 });
 
-test("FileTokenStore merges concurrent sessions' tokens on write", async () => {
+test("FileTokenStore's later put preserves an earlier session's token", async () => {
 	const path = join(await tempDir(), "tokens.json");
 	const token = (preimage: string) => ({
 		macaroonB64: "AQIDBA==",
@@ -115,8 +115,11 @@ test("FileTokenStore merges concurrent sessions' tokens on write", async () => {
 		expiresAt: "2099-01-01T00:00:00Z",
 	});
 
-	// Two store instances simulate two concurrent pi sessions sharing the
-	// file. Each pays for a different origin; both credentials must survive.
+	// Two store instances stand in for two pi sessions sharing the file.
+	// The puts are sequential, so this pins merge-on-write rather than the
+	// true interleave: the real race (both reading before either renames)
+	// needs a seam to force, and its worst case is losing one token, which
+	// costs one re-purchased bundle.
 	const sessionA = new FileTokenStore(path);
 	const sessionB = new FileTokenStore(path);
 	await sessionA.put("http://localhost:8404|/v1/chat|POST", token("aa"));
@@ -211,13 +214,17 @@ test("FileReceiptLog skips a record whose timestamp is not a string", async () =
 	assert.equal(await log.spentTodaySat(now), 4004);
 });
 
-test("FileTokenStore keeps working when the file cannot be read", async () => {
+// chmod 000 does not stop root, so these two would read the file happily and
+// pass for the wrong reason in a root container.
+const skipAsRoot = { skip: process.getuid?.() === 0 ? "chmod cannot restrict root" : false };
+
+test("FileTokenStore keeps working when the file cannot be read", skipAsRoot, async () => {
 	const dir = await tempDir();
 	const path = join(dir, "tokens.json");
 	await writeFile(path, "{}");
-	// Make the file unreadable. A read error must not escape: it would fail
-	// the request before it was attempted, and a broken cache must never
-	// block a payment.
+	// Make the file unreadable. A read error must not escape from get: it
+	// would fail the request before it was attempted, and a broken cache
+	// must never block a payment.
 	await chmod(path, 0o000);
 
 	const store = new FileTokenStore(path);
@@ -226,4 +233,35 @@ test("FileTokenStore keeps working when the file cannot be read", async () => {
 	} finally {
 		await chmod(path, 0o600);
 	}
+});
+
+test("FileTokenStore refuses to rewrite the file it could not read", skipAsRoot, async () => {
+	const dir = await tempDir();
+	const path = join(dir, "tokens.json");
+	const token = {
+		macaroonB64: "AQIDBA==",
+		preimageHex: "ab".repeat(32),
+		expiresAt: "2099-01-01T00:00:00Z",
+	};
+
+	// Two sessions' paid tokens are already on disk.
+	const seeded = new FileTokenStore(path);
+	await seeded.put("origin-a|/v1/chat|POST", token);
+	await seeded.put("origin-b|/v1/chat|POST", token);
+	const before = await readFile(path, "utf8");
+
+	// The merge read fails. put must give up rather than treat the file as
+	// empty: rewriting it from an empty map would replace two paid
+	// credentials with one, destroying value that is still spendable.
+	await chmod(path, 0o000);
+	try {
+		await assert.rejects(() => new FileTokenStore(path).put("origin-c|/v1/chat|POST", token));
+	} finally {
+		await chmod(path, 0o600);
+	}
+
+	assert.equal(await readFile(path, "utf8"), before);
+	const fresh = new FileTokenStore(path);
+	assert.deepEqual(await fresh.get("origin-a|/v1/chat|POST"), token);
+	assert.deepEqual(await fresh.get("origin-b|/v1/chat|POST"), token);
 });

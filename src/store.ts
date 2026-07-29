@@ -67,14 +67,16 @@ export class FileTokenStore implements TokenStore {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 				return new Map();
 			}
-			// Any other read failure (a bad mode, a full disk, a stale NFS
-			// handle) is treated like corruption rather than rethrown. A
-			// throw here escapes through tokenCache.get and fails the
-			// request before it is even attempted, which breaks the rule
-			// this module is built on: a broken cache must never block
-			// payments. The cost of continuing is re-purchasing a bundle.
-			console.warn(`pi-402: token store ${this.path} is unreadable, continuing without it:`, err);
-			return new Map();
+			// Any other read failure propagates. It is tempting to treat
+			// this like corruption and yield empty, but the two are not
+			// alike: a corrupt file has nothing left to lose, whereas an
+			// intact file that merely failed to open still holds every
+			// other session's paid tokens, and put() rewrites the file
+			// from whatever this returns. Yielding empty here would let
+			// one transient read error replace the whole file with a
+			// single token. get() absorbs the throw instead, so a
+			// failed read still cannot block a payment.
+			throw err;
 		}
 
 		try {
@@ -101,7 +103,18 @@ export class FileTokenStore implements TokenStore {
 	}
 
 	async get(key: string): Promise<CachedToken | null> {
-		const tokens = await this.readState();
+		// A read that fails here means we cannot tell whether a paid token
+		// exists, which is a reason to buy one, not a reason to fail the
+		// request: a broken cache must never block a payment. The worst
+		// case is re-purchasing a bundle.
+		let tokens: Map<string, CachedToken>;
+		try {
+			tokens = await this.readState();
+		} catch (err) {
+			console.warn(`pi-402: token store ${this.path} is unreadable, continuing without it:`, err);
+			return null;
+		}
+
 		return tokens.get(key) ?? null;
 	}
 
