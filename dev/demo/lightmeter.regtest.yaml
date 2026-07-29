@@ -1,0 +1,35 @@
+# lightmeter for the regtest demo profile: the dynamic pricer aperture asks for a
+# quote, and the meter that draws each request down against the paid bundle.
+#
+# Rates are Baseten's live per-million-token catalog prices; check them against
+# GET /v1/models before a real run. Static prices only, so no API key has to be
+# written to disk.
+listenaddr: "127.0.0.1:10025"
+dbpath: "lightmeter.regtest.db"
+defaultmodel: "moonshotai/Kimi-K3"
+bundletokens: 1000000
+refreshinterval: 15m
+models:
+  "zai-org/GLM-4.7":
+    inputusdpermtok: 0.60
+    outputusdpermtok: 2.20
+  "zai-org/GLM-5.2":
+    inputusdpermtok: 1.40
+    outputusdpermtok: 4.40
+  # A 1M-token bundle quotes at 11,500 sats at the pinned rate below: the
+  # margin lifts the rates to 3.75 and 18.75 msat/token, which round up to 4
+  # and 19, and the bundle is priced at the blended average,
+  # ceil(1_000_000 * (4 + 19) / 2 / 1000).
+  "moonshotai/Kimi-K3":
+    inputusdpermtok: 3.00
+    outputusdpermtok: 15.00
+pricing:
+  marginpercent: 25
+  btcusd:
+    # Pinned rather than polled, so the quoted bundle price is the same 11,500
+    # sats the deck cites. Set this to 0 to poll Coinbase spot instead, at the
+    # cost of the number on the slide no longer matching the one on screen.
+    staticrate: 100000
+webhook:
+  listenaddr: "127.0.0.1:10026"
+  secret: "demo-secret"

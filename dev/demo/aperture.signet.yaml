@@ -1,0 +1,31 @@
+# Aperture for the signet demo profile. There is no lnd here: challenge invoices
+# are minted from the seller's Wavelength wallet, and the swap server supplies
+# the inbound liquidity that backs them, so the seller needs no Lightning node,
+# no channels and no inbound capacity to get paid.
+#
+# The Baseten credential is read from aperture's environment, never from this
+# file, so pi never sees it.
+listenaddr: "127.0.0.1:8404"
+insecure: true
+servestatic: false
+autocert: false
+dbbackend: "sqlite"
+sqlite:
+  databasefilename: "aperture.db"
+authenticator:
+  network: "signet"
+  wavelengthgateway: "http://localhost:10061"
+services:
+  - name: "inference"
+    hostregexp: ".*"
+    pathregexp: "^/v1/.*"
+    address: "inference.baseten.co"
+    protocol: "https"
+    auth: "on"
+    headers:
+      Authorization: "Bearer ${BASETEN_GLM_5_2}"
+    dynamicprice:
+      enabled: true
+      grpcaddress: "127.0.0.1:10025"
+      insecure: true
+      metered: true

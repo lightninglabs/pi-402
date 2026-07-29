@@ -103,6 +103,11 @@ boarding output into the next Ark round, so the balance costs **a signet
 confirmation plus a round** before it is spendable. Signet blocks average ten
 minutes and are bursty. Fine for pre-funding, wrong for the stage.
 
+On signet, `./dev/demo/demo-fund.sh signet 25000` mints the invoice for you and
+`./dev/demo/demo-fund.sh signet --watch` prints the balance the moment it
+moves, which is the bit worth having on screen while you pay from the app. On
+regtest the same script pays the invoice itself, since there is no app.
+
 ### Recommended demo shape: do both
 
 Use `/fund` live, but **pre-fund the day before as the safety net**, so a swap
@@ -138,25 +143,38 @@ The points worth landing out loud:
 
 ## 3. Bring up the seller stack
 
-Aperture holds the Baseten credential; pi never sees it.
+One script, two profiles. Signet is the one to demo on; regtest is the
+fallback for when signet or the venue's network is unwell.
 
 ```bash
-export BASETEN_API_KEY=...   # read from the env by aperture's ${ENV} expansion
+export BASETEN_GLM_5_2=...        # aperture reads the credential from its env
+./dev/demo/demo-up.sh signet      # or: ./dev/demo/demo-up.sh regtest
 ```
 
-1. **Invoice node.** A signet LND that aperture mints invoices from. Point
-   `authenticator.lndhost` / `tlspath` / `macdir` at it and set
-   `authenticator.network: signet`.
-2. **lightmeter** on `127.0.0.1:10025`, from
-   [`dev/regtest/lightmeter.yaml`](regtest/lightmeter.yaml). For signet,
-   change two things:
-   - `defaultmodel: "moonshotai/Kimi-K3"` (already set)
-   - `pricing.btcusd.staticrate: 0` so it polls Coinbase spot instead of the
-     pinned regtest rate. Leave it pinned only if you want the slide's exact
-     11,500-sat number to reproduce on stage.
-3. **aperture** from [`dev/regtest/aperture-baseten.yaml`](regtest/aperture-baseten.yaml),
-   listening on `127.0.0.1:8404`, fronting `inference.baseten.co` over https
-   with `dynamicprice.metered: true`.
+It brings up the pricer, the proxy and both wallets in a tmux session, creates
+the wallets on first run, and finishes by proving the seller works: it fires an
+unauthenticated request and shows you the 402 with the invoice it minted. If
+that line does not appear, stop and fix it before the room is watching.
+
+**There is no Lightning node on either profile.** Aperture mints its challenge
+invoices from a Wavelength wallet (`authenticator.wavelengthgateway`), so the
+swap server supplies the inbound liquidity and the seller needs no node, no
+channels and no inbound capacity. That is also the honest headline for this
+part of the talk: standing up a paid API took a wallet, not an infrastructure
+project.
+
+What actually differs between the profiles:
+
+| | signet | regtest |
+|---|---|---|
+| Chain, operator, swap server | public, hosted | local, `docker compose` |
+| Containers | none | the lumos stack |
+| Buyer funding | **you pay from the Wavelength app** | local lnd pays it |
+| Invoice prefix | `lntbs…` | `lnbcrt…` |
+
+Both pin `btcusd.staticrate: 100000` so the quoted bundle is the same 11,500
+sats the deck cites. Set it to `0` to poll Coinbase spot instead, at the cost
+of the number on the slide no longer matching the one on screen.
 
 Sanity check the seller before pi is involved. This should come back **402**
 with a `WWW-Authenticate: L402 ...` header carrying a macaroon and an invoice:
