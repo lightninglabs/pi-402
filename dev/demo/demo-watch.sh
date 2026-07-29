@@ -31,6 +31,21 @@ sats() {
 
 bold=$'\033[1m'; dim=$'\033[2m'; grn=$'\033[32m'; ylw=$'\033[33m'; rst=$'\033[0m'
 
+# The buyer's node identity, recorded when the wallet was created. Worth having
+# on screen: the demo opens on an empty wallet, and this is what shows it is
+# the same wallet throughout rather than a fresh one conjured up once the money
+# appears. Nothing about the identity changes when the balance does.
+identity() {
+	python3 -c "
+import json,sys
+try:
+    print(json.load(open('$STATE/buyer-wallet-created.json'))['identity_pubkey'])
+except Exception:
+    print('')
+" 2>/dev/null
+}
+BUYER_ID="$(identity)"
+
 while true; do
 	buyer="$(sats "$BUYER_GATEWAY_HOST")"
 	seller="$(sats "$SELLER_GATEWAY_HOST")"
@@ -39,6 +54,9 @@ while true; do
 	printf '%s pi-402 demo — %s%s\n\n' "$bold" "$PROFILE" "$rst"
 	printf '  %sbuyer%s   (pi)       %s%8s sat%s\n' \
 		"$bold" "$rst" "$ylw" "${buyer:---}" "$rst"
+	if [[ -n "$BUYER_ID" ]]; then
+		printf '  %s         node %s%s\n' "$dim" "${BUYER_ID:0:24}..." "$rst"
+	fi
 	printf '  %sseller%s  (aperture) %s%8s sat%s\n\n' \
 		"$bold" "$rst" "$grn" "${seller:---}" "$rst"
 

@@ -125,8 +125,12 @@ run_in seller-wallet "$(waved_cmd "$STATE/seller-wallet" "$SELLER_RPC" "$SELLER_
 say "starting the buyer wallet (pi pays from this one)"
 run_in buyer-wallet "$(waved_cmd "$STATE/buyer-wallet" "$BUYER_RPC" "$BUYER_GATEWAY_HOST") 2>&1 | tee $STATE/buyer-wallet.log"
 
+say "starting the user wallet (stands in for the phone that funds the harness)"
+run_in user-wallet "$(waved_cmd "$STATE/user-wallet" "$USER_RPC" "$USER_GATEWAY_HOST") 2>&1 | tee $STATE/user-wallet.log"
+
 wait_for "seller wallet" 45 wallet_listening "$SELLER_GATEWAY_HOST"
 wait_for "buyer wallet"  45 wallet_listening "$BUYER_GATEWAY_HOST"
+wait_for "user wallet"   45 wallet_listening "$USER_GATEWAY_HOST"
 
 # Bring each wallet to a usable state, creating one only on the very first run.
 #
@@ -174,6 +178,7 @@ ensure_wallet() {
 # surfaces a bad password now rather than mid-demo.
 ensure_wallet seller "$SELLER_GATEWAY_HOST"
 ensure_wallet buyer "$BUYER_GATEWAY_HOST"
+ensure_wallet user "$USER_GATEWAY_HOST"
 
 say "starting aperture"
 run_in aperture "cd $STATE && $APERTURE_BIN --configfile=$HERE/$APERTURE_CONFIG 2>&1 | tee $STATE/aperture.log"
@@ -204,6 +209,7 @@ cat <<EOF
   state       $STATE
   buyer       ${BUYER_BAL:-unknown} sat   (gateway $BUYER_GATEWAY_HOST)
   seller      gateway $SELLER_GATEWAY_HOST
+  user        gateway $USER_GATEWAY_HOST   (the phone stand-in)
   funding     $DEMO_FUNDING
 
   Run pi against it with:

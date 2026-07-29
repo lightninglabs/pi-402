@@ -44,7 +44,7 @@ fund() { "$DEMO_HERE/demo-fund.sh" "$DEMO_PROFILE" "${1:-25000}"; }
 # analogue of the real demo, where a phone pays the harness.
 topup() {
 	local amount="${1:-15000}"
-	local from="${2:-$SELLER_GATEWAY_HOST}"
+	local from="${2:-$USER_GATEWAY_HOST}"
 
 	local invoice intent quote
 	invoice="$(curl -sf --max-time 60 -X POST \
@@ -70,6 +70,86 @@ topup() {
 	curl -s --max-time 10 -X POST "http://$BUYER_GATEWAY_HOST/v1/wallet/balance" \
 		-H 'Content-Type: application/json' -d '{}' \
 		| sed -n 's/.*"confirmed_sat":"\([0-9]*\)".*/  buyer now \1 sat/p'
+}
+
+# pay settles one specific invoice from the user wallet. This is the beat that
+# matters when the harness starts empty: pi prints an invoice, and the money
+# arrives from a wallet that is visibly not the harness. Paste the invoice pi
+# showed rather than minting a second one, so what the room watched being
+# asked for is what they watch being paid.
+pay() {
+	local invoice="${1:-}"
+	[[ -n "$invoice" ]] || { echo "usage: pay <bolt11>" >&2; return 1; }
+
+	local quote intent
+	quote="$(curl -sf --max-time 60 -X POST \
+		"http://$USER_GATEWAY_HOST/v1/wallet/prepare-send" \
+		-H 'Content-Type: application/json' -d "{\"invoice\":\"$invoice\"}")"
+	intent="$(echo "$quote" | sed -n 's/.*"send_intent_id":"\([^"]*\)".*/\1/p')"
+	[[ -n "$intent" ]] || { echo "quote failed: $quote" >&2; return 1; }
+
+	echo "  paying $(echo "$quote" | sed -n 's/.*"amount_sat":"\([^"]*\)".*/\1/p') sat" \
+		"on rail $(echo "$quote" | sed -n 's/.*"rail":"\([^"]*\)".*/\1/p')" \
+		"fee $(echo "$quote" | sed -n 's/.*"expected_fee_sat":"\([^"]*\)".*/\1/p') sat"
+
+	curl -sf --max-time 90 -X POST "http://$USER_GATEWAY_HOST/v1/wallet/send" \
+		-H 'Content-Type: application/json' \
+		-d "{\"send_intent_id\":\"$intent\"}" -o /dev/null || return 1
+
+	sleep 6
+	balances
+}
+
+# balances prints all three wallets, which is the frame the demo is told in.
+balances() {
+	local host name
+	for pair in "buyer:$BUYER_GATEWAY_HOST" "seller:$SELLER_GATEWAY_HOST" \
+		"user:$USER_GATEWAY_HOST"; do
+		name="${pair%%:*}"; host="${pair#*:}"
+		printf '  %-7s %s sat\n' "$name" "$(curl -s --max-time 5 -X POST \
+			"http://$host/v1/wallet/balance" -H 'Content-Type: application/json' \
+			-d '{}' | sed -n 's/.*"confirmed_sat":"\([0-9]*\)".*/\1/p')"
+	done
+}
+
+# zero empties the buyer back into the user wallet, so the next run can open on
+# a wallet with nothing in it. That opening is the whole point of the demo:
+# the harness is not pre-loaded, it starts broke and earns its way in.
+zero() {
+	local bal
+	bal="$(curl -s --max-time 10 -X POST \
+		"http://$BUYER_GATEWAY_HOST/v1/wallet/balance" \
+		-H 'Content-Type: application/json' -d '{}' \
+		| sed -n 's/.*"confirmed_sat":"\([0-9]*\)".*/\1/p')"
+
+	if [[ -z "$bal" || "$bal" -eq 0 ]]; then
+		echo "  buyer already empty"
+		return 0
+	fi
+
+	# Leave nothing behind: send the whole balance back to the phone wallet.
+	local invoice quote intent
+	invoice="$(curl -sf --max-time 60 -X POST \
+		"http://$USER_GATEWAY_HOST/v1/wallet/recv" \
+		-H 'Content-Type: application/json' \
+		-d "{\"amt_sat\":$bal,\"memo\":\"pi-402 demo reset\"}" \
+		| sed -n 's/.*"invoice":"\([^"]*\)".*/\1/p')"
+	[[ -n "$invoice" ]] || { echo "could not mint a drain invoice" >&2; return 1; }
+
+	quote="$(curl -sf --max-time 60 -X POST \
+		"http://$BUYER_GATEWAY_HOST/v1/wallet/prepare-send" \
+		-H 'Content-Type: application/json' -d "{\"invoice\":\"$invoice\"}")"
+	intent="$(echo "$quote" | sed -n 's/.*"send_intent_id":"\([^"]*\)".*/\1/p')"
+	[[ -n "$intent" ]] || { echo "drain quote failed: $quote" >&2; return 1; }
+
+	curl -sf --max-time 90 -X POST "http://$BUYER_GATEWAY_HOST/v1/wallet/send" \
+		-H 'Content-Type: application/json' \
+		-d "{\"send_intent_id\":\"$intent\"}" -o /dev/null || return 1
+
+	rm -f "$DEMO_STATE/pi-data/tokens.json" "$DEMO_STATE/pi-data/receipts.ndjson"
+	sleep 6
+	echo "  buyer drained, token cache and receipts cleared"
+	balances
 }
 
 watch() { "$DEMO_HERE/demo-fund.sh" "$DEMO_PROFILE" --watch; }
@@ -110,6 +190,7 @@ reset() {
 }
 
 echo "demo driver ready ($_demo_profile)"
-echo "  challenge | fund [sats] | topup [sats] | watch | show [file] | receipts | reset"
+echo "  challenge | pay <bolt11> | topup [sats] | balances | zero"
+echo "  watch | show [file] | receipts | reset | fund [sats]"
 
 unset _demo_profile _demo_here
