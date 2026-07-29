@@ -4,7 +4,7 @@
 # Rates are Baseten's live per-million-token catalog prices; check them against
 # GET /v1/models before a real run. Static prices only, so no API key has to be
 # written to disk.
-listenaddr: "127.0.0.1:10025"
+listenaddr: "127.0.0.1:10125"
 dbpath: "lightmeter.signet.db"
 defaultmodel: "moonshotai/Kimi-K3"
 bundletokens: 1000000
@@ -31,5 +31,5 @@ pricing:
     # cost of the number on the slide no longer matching the one on screen.
     staticrate: 100000
 webhook:
-  listenaddr: "127.0.0.1:10026"
+  listenaddr: "127.0.0.1:10126"
   secret: "demo-secret"
