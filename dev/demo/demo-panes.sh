@@ -5,15 +5,21 @@
 #   source dev/demo/pi-env.sh regtest    # optional, for the pi pane after
 #   ./dev/demo/demo-panes.sh regtest
 #
-# Run this from the pane you want pi to live in. It splits two panes off to
-# the right and leaves your focus where it was, so the pane you are sitting in
-# stays the big one:
+# Run this from the pane you want pi to live in. It builds the rest around you
+# and leaves your focus where it was, so the pane you are sitting in stays the
+# big one:
 #
 #   +-----------------------+------------+
-#   |                       |  status    |   balances + meter
-#   |   pi  (this pane)     +------------+
-#   |                       |  proxy     |   aperture log, the 402s
+#   |   pi  (this pane)     |  status    |   balances + meter
+#   |                       +------------+
+#   +-----------------------+  proxy     |   aperture log, the 402s
+#   |   driver              |            |
 #   +-----------------------+------------+
+#
+# The driver pane is the one you type in during the demo: the curl that shows
+# the seller asking for money, the funding command, a cat of whatever pi just
+# wrote. It has to be its own pane because the other three are all busy, and
+# the funding step in particular happens while pi is running.
 #
 # It only creates panes. It does not start pi, so you keep control of when the
 # demo actually begins.
@@ -63,18 +69,34 @@ echo "building the $PROFILE demo layout..."
 RIGHT="$(split "$HERDR_PANE_ID" right 0.38)"
 PROXY="$(split "$RIGHT" down 0.5)"
 
-herdr pane rename "$RIGHT" "status"  >/dev/null 2>&1 || true
-herdr pane rename "$PROXY" "proxy"   >/dev/null 2>&1 || true
+# The driver sits under pi rather than in the right column, because the 402
+# response is wide: the macaroon and invoice wrap into noise in a narrow pane,
+# and that header is the thing worth reading out.
+DRIVER="$(split "$HERDR_PANE_ID" down 0.30)"
+
+herdr pane rename "$RIGHT"  "status" >/dev/null 2>&1 || true
+herdr pane rename "$PROXY"  "proxy"  >/dev/null 2>&1 || true
+herdr pane rename "$DRIVER" "driver" >/dev/null 2>&1 || true
 
 herdr pane run "$RIGHT" "$HERE/demo-watch.sh $PROFILE" >/dev/null
 herdr pane run "$PROXY" "tail -f $STATE/aperture.log" >/dev/null
 
+# The driver is left at a prompt on purpose, but primed with the aliases the
+# demo actually uses so nothing long has to be typed in front of an audience.
+herdr pane run "$DRIVER" "source $HERE/demo-aliases.sh $PROFILE" >/dev/null
+
 cat <<EOF
 
   layout ready
+    pi      $HERDR_PANE_ID   (this pane)
     status  $RIGHT   balances, payments, and the meter
     proxy   $PROXY   aperture log, where the 402s show up
-    pi      $HERDR_PANE_ID   (this pane)
+    driver  $DRIVER   type here: challenge, fund, cat
+
+  In the driver pane, the demo beats are:
+    challenge     the 402 with no credential
+    fund 25000    pay the invoice pi minted
+    show          cat what pi just wrote
 
   Start pi here with:
 
