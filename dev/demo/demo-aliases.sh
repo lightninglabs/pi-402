@@ -152,6 +152,51 @@ zero() {
 	balances
 }
 
+# refund empties the pi wallet to an invoice you supply, which on signet means
+# an invoice from your own Wavelength app. zero sends to the local stand-in
+# wallet instead, which is fine on regtest where that wallet is the phone, and
+# wrong on signet where it is a throwaway holding nothing.
+#
+# The invoice carries its own amount, so ask the app for exactly what `owed`
+# reports if you want the wallet to end at zero.
+refund() {
+	local invoice="${1:-}"
+	if [[ -z "$invoice" ]]; then
+		echo "usage: refund <bolt11>   (ask your wallet for an invoice for $(owed) sat)" >&2
+		return 1
+	fi
+
+	local quote intent
+	quote="$(curl -sf --max-time 60 -X POST \
+		"http://$BUYER_GATEWAY_HOST/v1/wallet/prepare-send" \
+		-H 'Content-Type: application/json' -d "{\"invoice\":\"$invoice\"}")"
+	intent="$(echo "$quote" | sed -n 's/.*"send_intent_id":"\([^"]*\)".*/\1/p')"
+	[[ -n "$intent" ]] || { echo "quote failed: $quote" >&2; return 1; }
+
+	echo "  sending $(echo "$quote" | sed -n 's/.*"amount_sat":"\([^"]*\)".*/\1/p') sat" \
+		"on rail $(echo "$quote" | sed -n 's/.*"rail":"\([^"]*\)".*/\1/p')" \
+		"fee $(echo "$quote" | sed -n 's/.*"expected_fee_sat":"\([^"]*\)".*/\1/p') sat"
+
+	curl -sf --max-time 90 -X POST "http://$BUYER_GATEWAY_HOST/v1/wallet/send" \
+		-H 'Content-Type: application/json' \
+		-d "{\"send_intent_id\":\"$intent\"}" -o /dev/null || return 1
+
+	# Only clear the demo's own state once the money has actually left.
+	rm -f "$DEMO_STATE/pi-data/tokens.json" "$DEMO_STATE/pi-data/receipts.ndjson"
+	sleep 6
+	echo "  token cache and receipts cleared"
+	balances
+}
+
+# owed prints the pi wallet's confirmed balance on its own, which is the number
+# to ask your wallet for an invoice for.
+owed() {
+	curl -s --max-time 10 -X POST \
+		"http://$BUYER_GATEWAY_HOST/v1/wallet/balance" \
+		-H 'Content-Type: application/json' -d '{}' \
+		| sed -n 's/.*"confirmed_sat":"\([0-9]*\)".*/\1/p'
+}
+
 watch() { "$DEMO_HERE/demo-fund.sh" "$DEMO_PROFILE" --watch; }
 
 show() { cat "${1:-$(ls -t . | head -1)}"; }
@@ -190,7 +235,8 @@ reset() {
 }
 
 echo "demo driver ready ($_demo_profile)"
-echo "  challenge | pay <bolt11> | topup [sats] | balances | zero"
+echo "  challenge | pay <bolt11> | topup [sats] | balances"
+echo "  zero (to stand-in) | refund <bolt11> (to your wallet) | owed"
 echo "  watch | show [file] | receipts | reset | fund [sats]"
 
 unset _demo_profile _demo_here
