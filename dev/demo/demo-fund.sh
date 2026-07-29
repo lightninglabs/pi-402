@@ -92,12 +92,21 @@ The swap server cannot cover this receive.
   asked for     $AMOUNT sat
   it can spend  $SPENDABLE sat
 
+Use the phone wallet instead, which does not go through the swap server at
+all and is what the demo is built around:
+
+  topup $AMOUNT          mint an invoice and pay it from the phone wallet
+  pay <bolt11>           pay the exact invoice pi printed
+
+Both settle on the in-ark rail: the sender funds the vHTLC itself, so there is
+no fee, no wait, and nothing drawn from the pool below.
+
 An in-swap pays you out of swapd's own Ark liquidity. Its auto-boarder tops
 that up from chain, but the boarding output only becomes spendable once it is
 swept into a round, and on regtest that can stall with nothing to force it.
 
-Either ask for less than $SPENDABLE sat, or rebuild the stack for a fresh
-pool:
+If you specifically want to exercise the Lightning in-swap, either ask for
+less than $SPENDABLE sat or rebuild the stack for a fresh pool:
 
   cd \$LUMOS_DIR && docker compose -f docker-compose.yml \\
     -f docker-compose.beefbux.yml -f docker-compose.v010.yml down -v

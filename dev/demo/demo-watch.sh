@@ -60,13 +60,21 @@ while true; do
 	printf '  %sseller%s  (aperture) %s%8s sat%s\n\n' \
 		"$bold" "$rst" "$grn" "${seller:---}" "$rst"
 
+	# Quoted and paid are deliberately shown side by side. Every 402 books a
+	# bundle, so simply asking the price leaves a "Booked bundle ... for 11500
+	# sats" line in the meter below, which reads like money moved. Only a paid
+	# bundle is ever usable, and only the paid figure comes from receipts.
+	quoted="$(grep -c 'Booked bundle' "$LIGHTMETER_LOG" 2>/dev/null || echo 0)"
+	n=0; total=0
 	if [[ -f "$RECEIPTS" ]]; then
 		n="$(grep -c . "$RECEIPTS" 2>/dev/null || echo 0)"
 		total="$(sed -n 's/.*"paidSat":\([0-9]*\).*/\1/p' "$RECEIPTS" \
 			| awk '{s += $1} END {print s + 0}')"
-		printf '  %spayments%s  %s bundle(s), %s sat total\n\n' \
-			"$bold" "$rst" "$n" "$total"
 	fi
+	printf '  %sbundles%s   %s quoted, %s%s paid%s (%s sat)\n' \
+		"$bold" "$rst" "$quoted" "$grn" "$n" "$rst" "$total"
+	printf '  %s          quoting is free; only a paid bundle is usable%s\n\n' \
+		"$dim" "$rst"
 
 	printf '  %smeter%s\n' "$bold" "$rst"
 	if [[ -f "$LIGHTMETER_LOG" ]]; then
