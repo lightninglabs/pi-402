@@ -47,7 +47,12 @@ function gatewayStub(routes: Record<string, () => { status: number; body: unknow
 		});
 	}) as typeof fetch;
 
-	return { calls, restore: () => { globalThis.fetch = original; } };
+	return {
+		calls,
+		restore: () => {
+			globalThis.fetch = original;
+		},
+	};
 }
 
 // WALLET_NOT_READY is what waved answers the status probe with while no wallet
@@ -58,7 +63,13 @@ const notReady = () => ({
 	body: {
 		code: 9,
 		message: "get balance: rpc error: code = FailedPrecondition desc = wallet is not ready (create first)",
-		details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "WALLET_NOT_READY", domain: "wavelength/wallet" }],
+		details: [
+			{
+				"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+				reason: "WALLET_NOT_READY",
+				domain: "wavelength/wallet",
+			},
+		],
 	},
 });
 
@@ -71,7 +82,10 @@ test("startAndUnlock creates the wallet when the status probe reports none exist
 		"/v1/wallet/status": notReady,
 		"/v1/wallet/unlock": () => ({
 			status: 400,
-			body: { code: 9, message: "unlock wallet: rpc error: code = FailedPrecondition desc = wallet is not locked (state=none)" },
+			body: {
+				code: 9,
+				message: "unlock wallet: rpc error: code = FailedPrecondition desc = wallet is not locked (state=none)",
+			},
 		}),
 		"/v1/wallet/create": () => ({ status: 200, body: { identity_pubkey: "02aa" } }),
 	});

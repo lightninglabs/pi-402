@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseToolArguments, toOpenAiMessages, toOpenAiTools, tokenRouteId } from "../src/provider.ts";
+import { parseToolArguments, tokenRouteId, toOpenAiMessages, toOpenAiTools } from "../src/provider.ts";
 
 const CHAT = "http://localhost:8404/v1/chat/completions";
 
@@ -97,7 +97,10 @@ test("toOpenAiMessages replays the tool-call round trip", () => {
 	assert.equal(messages[0].role, "system");
 	assert.equal(messages[1].role, "user");
 
-	const assistant = messages[2] as { role: string; tool_calls?: Array<{ id: string; function: { arguments: string } }> };
+	const assistant = messages[2] as {
+		role: string;
+		tool_calls?: Array<{ id: string; function: { arguments: string } }>;
+	};
 	assert.equal(assistant.role, "assistant");
 	assert.equal(assistant.tool_calls?.[0].id, "call_1");
 	// Arguments go back over the wire as a JSON string, not an object.
