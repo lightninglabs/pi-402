@@ -1,4 +1,10 @@
-import { type ClientReceipt, createPayingFetch, TokenCache, type TokenStore } from "@aperture/client";
+import {
+	type ClientReceipt,
+	type CredentialStore,
+	createPayingFetch,
+	TokenCache,
+	type TokenStore,
+} from "@aperture/client";
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
 import {
 	type Api,
@@ -10,6 +16,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
+import { mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";
 
 export interface StreamDeps {
@@ -20,6 +27,11 @@ export interface StreamDeps {
 	// survive process restarts; when absent, tokens live in memory and die
 	// with the process.
 	tokenStore?: TokenStore;
+
+	// credentialStore holds paid Payment credentials, the MPP counterpart to
+	// tokenStore. Durable storage keeps a retry that throws after the money
+	// moved from turning into a second payment on the next attempt.
+	credentialStore?: CredentialStore;
 
 	// receiptLog receives one record per settled payment, stamped with the
 	// model the payment bought inference for. Absent in mock mode, so fake
@@ -108,13 +120,30 @@ export function makeStreamSimple(deps: StreamDeps) {
 						}
 					: undefined;
 
-				// The paying fetch runs the L402 buyer loop: detect 402, assert the
-				// budget policy, pay via the wallet, cache the token, and retry.
+				// The paying fetch runs the buyer loop: detect 402, assert the
+				// budget policy, pay via the wallet, cache the credential, and
+				// retry. Which scheme it answers with is the seller's choice
+				// as narrowed by ours: aperture with --enablempp offers a
+				// Payment challenge alongside L402 in one merged header, and
+				// mppIntents decides whether we take it.
 				const payingFetch = createPayingFetch({
 					payer: deps.payer,
 					buyerPolicy: deps.policy,
 					tokenCache,
 					receiptCache,
+					mpp: {
+						intents: mppIntents(),
+						credentialCache: deps.credentialStore,
+						// No return-invoice minter is wired, so a session
+						// offer would strand its unspent deposit. Leaving
+						// allowSessionWithoutRefund off makes the client
+						// decline sessions and take the charge instead.
+						onReceiptMismatch: ({ receipt, reasons }) => {
+							console.warn(
+								`pi-402: payment receipt ${receipt.reference} disagrees with what was paid for: ${reasons.join("; ")}`,
+							);
+						},
+					},
 				});
 
 				const wireModel = wireModelId(model.id);

@@ -33,6 +33,47 @@ export function maxSatPerRequest(): number {
 	return readSatCeiling("PI402_MAX_SAT_PER_REQUEST", DEFAULT_MAX_SAT_PER_REQUEST);
 }
 
+// PaymentScheme selects which HTTP authentication schemes the buyer will
+// answer a 402 with.
+export type PaymentScheme = "auto" | "l402";
+
+// paymentScheme reads the scheme preference from PI402_PAYMENT_SCHEME.
+//
+// The default is "auto": take a Payment (MPP) offer when the seller makes
+// one, and fall back to L402 otherwise. Aperture with --enablempp offers both
+// in a single merged WWW-Authenticate, so "auto" is what exercises MPP.
+// Setting "l402" pins the buyer to the older scheme, which is the escape
+// hatch if a seller's Payment offer turns out to be unsatisfiable.
+//
+// An unrecognized value throws rather than silently falling back. A typo in
+// the scheme name should not quietly change which protocol the money moves
+// over.
+export function paymentScheme(): PaymentScheme {
+	const raw = process.env.PI402_PAYMENT_SCHEME;
+	if (raw === undefined || raw === "") {
+		return "auto";
+	}
+
+	const value = raw.trim().toLowerCase();
+	if (value === "auto" || value === "l402") {
+		return value;
+	}
+
+	throw new Error(`PI402_PAYMENT_SCHEME must be "auto" or "l402", got ${JSON.stringify(raw)}`);
+}
+
+// mppIntents returns the Payment intents to accept, most wanted first.
+//
+// Under "l402" the list is empty, so no Payment offer matches and the buyer
+// takes the L402 door. Otherwise only "charge" is accepted: a session holds a
+// deposit the seller owes back, and reclaiming it needs a refund invoice the
+// wallet must mint and a close the process must remember to send. Charge
+// settles each request on its own and leaves nothing outstanding, which is
+// the right default for a wallet running unattended inside an editor.
+export function mppIntents(): readonly string[] {
+	return paymentScheme() === "l402" ? [] : ["charge"];
+}
+
 // utcDayKey returns a stable key for the current UTC calendar day, used to reset
 // the daily counter at the day boundary.
 function utcDayKey(now: Date): string {
