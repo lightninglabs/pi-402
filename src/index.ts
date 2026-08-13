@@ -58,6 +58,19 @@ export default function (pi: ExtensionAPI): void {
 		apiKey: "unused",
 		models: [
 			{
+				// Maps to deepseek-ai/DeepSeek-V4-Flash-0731 on the wire.
+				// The budget option: its bundle quotes at roughly half a
+				// GLM-4.7 bundle, so it is also the cheapest way to
+				// exercise the paid path end to end.
+				id: "deepseek-v4-flash",
+				name: "DeepSeek V4 Flash (L402)",
+				input: ["text"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 32_768,
+			},
+			{
 				// The Pi-facing id is slash-free; the provider maps it to
 				// the Baseten Model APIs slug (zai-org/GLM-4.7) on the wire.
 				id: "glm-4.7",

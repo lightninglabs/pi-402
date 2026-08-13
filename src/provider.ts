@@ -43,6 +43,7 @@ export interface StreamDeps {
 // compose with Pi's provider/model selection) to the full Baseten Model APIs
 // slugs sent on the wire.
 const BASETEN_MODEL_SLUGS: Record<string, string> = {
+	"deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash-0731",
 	"glm-4.7": "zai-org/GLM-4.7",
 	"glm-5": "zai-org/GLM-5",
 	"glm-5.2": "zai-org/GLM-5.2",
