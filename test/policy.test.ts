@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { buildBudgetPolicy, maxSatPerRequest, readSatCeiling } from "../src/policy.ts";
+import { buildBudgetPolicy, maxSatPerRequest, mppIntents, paymentScheme, readSatCeiling } from "../src/policy.ts";
 
 // buildBudgetPolicy takes an ExtensionAPI it never uses; a bare cast keeps the
 // tests free of the Pi runtime.
@@ -180,4 +180,109 @@ test("daily counter resets at the UTC day boundary", async () => {
 	} finally {
 		globalThis.Date = realDate;
 	}
+});
+
+test("paymentScheme defaults to auto so a Payment offer is taken", async (t) => {
+	t.after(() => {
+		process.env.PI402_PAYMENT_SCHEME = undefined;
+		delete process.env.PI402_PAYMENT_SCHEME;
+	});
+
+	delete process.env.PI402_PAYMENT_SCHEME;
+	assert.equal(paymentScheme(), "auto");
+	assert.deepEqual(mppIntents(), ["charge"]);
+});
+
+test("paymentScheme accepts l402 and empties the intent list", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+	});
+
+	process.env.PI402_PAYMENT_SCHEME = "l402";
+	assert.equal(paymentScheme(), "l402");
+
+	// An empty intent list is how the buyer declines every Payment offer and
+	// falls back to the L402 door.
+	assert.deepEqual(mppIntents(), []);
+});
+
+test("paymentScheme ignores case and surrounding whitespace", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+	});
+
+	process.env.PI402_PAYMENT_SCHEME = "  L402  ";
+	assert.equal(paymentScheme(), "l402");
+});
+
+test("paymentScheme rejects an unrecognized scheme rather than guessing", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+	});
+
+	// A typo must not quietly change which protocol the money moves over.
+	process.env.PI402_PAYMENT_SCHEME = "mpp";
+	assert.throws(() => paymentScheme(), /must be "auto" or "l402"/);
+});
+
+test("mppIntents never offers session, which would strand a deposit", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+	});
+
+	// No return-invoice minter is wired, so a session's unspent deposit could
+	// not be reclaimed. Charge settles each request and leaves nothing owed.
+	delete process.env.PI402_PAYMENT_SCHEME;
+	assert.ok(!mppIntents().includes("session"));
+});
+
+test("mppIntents reads a preference list from PI402_MPP_INTENTS", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_MPP_INTENTS = "session, charge";
+	assert.deepEqual(mppIntents({ hasReturnInvoiceMinter: true }), ["session", "charge"]);
+});
+
+test("mppIntents refuses sessions without a return-invoice minter", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	// A session's open must carry an amountless refund invoice and the
+	// server refuses an open without one, so opting into sessions with no
+	// way to mint that invoice would pay deposits for guaranteed refusals.
+	process.env.PI402_MPP_INTENTS = "session,charge";
+	assert.throws(() => mppIntents(), /guaranteed refusal/);
+	assert.throws(() => mppIntents({ hasReturnInvoiceMinter: false }), /guaranteed refusal/);
+});
+
+test("mppIntents rejects an unknown intent name", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_MPP_INTENTS = "charge,bearer";
+	assert.throws(() => mppIntents(), /must be "charge" or "session"/);
+});
+
+test("mppIntents rejects a list that names nothing", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_MPP_INTENTS = " , ";
+	assert.throws(() => mppIntents(), /at least one intent/);
+});
+
+test("the l402 pin still empties the list regardless of intents", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_PAYMENT_SCHEME = "l402";
+	process.env.PI402_MPP_INTENTS = "session,charge";
+	assert.deepEqual(mppIntents({ hasReturnInvoiceMinter: true }), []);
 });

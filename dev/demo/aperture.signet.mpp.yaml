@@ -1,0 +1,46 @@
+# Aperture for the signet demo profile, with the Payment (MPP) scheme enabled
+# alongside L402.
+#
+# This is a second instance running beside the L402-only one on 8504, not a
+# replacement for it. Keeping both up is what lets a single buyer process prove
+# the two doors against the same seller wallet: the L402 aperture answers with
+# an LSAT/L402 challenge, this one adds a Payment challenge to the same
+# response, and the buyer picks. It gets its own database file because two
+# aperture processes must not share one.
+#
+# As in the L402 profile there is no lnd: challenge invoices are minted from
+# the seller's Wavelength wallet, and the Baseten credential is read from
+# aperture's environment rather than from this file, so pi never sees it.
+listenaddr: "127.0.0.1:8505"
+insecure: true
+servestatic: false
+autocert: false
+dbbackend: "sqlite"
+sqlite:
+  databasefilename: "aperture-mpp.db"  # under the signet state dir
+authenticator:
+  network: "signet"
+  wavelengthgateway: "http://localhost:10161"
+  # With this set, the authenticator becomes a MultiAuthenticator: it adds a
+  # Payment challenge to the same 402 that carries the LSAT and L402 offers,
+  # and the client chooses which to satisfy.
+  enablempp: true
+  mpprealm: "pi-402 signet"
+  # Sessions stay off. A session holds a deposit the seller owes back, and
+  # reclaiming it needs a refund invoice the buyer must mint plus a close it
+  # must remember to send. The charge intent settles each request on its own.
+  enablesessions: false
+services:
+  - name: "inference"
+    hostregexp: ".*"
+    pathregexp: "^/v1/.*"
+    address: "inference.baseten.co"
+    protocol: "https"
+    auth: "on"
+    headers:
+      Authorization: "Bearer ${BASETEN_GLM_5_2}"
+    dynamicprice:
+      enabled: true
+      grpcaddress: "127.0.0.1:10125"
+      insecure: true
+      metered: true

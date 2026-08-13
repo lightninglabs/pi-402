@@ -10,6 +10,12 @@ defaultmodel: "moonshotai/Kimi-K3"
 bundletokens: 1000000
 refreshinterval: 15m
 models:
+  # The budget option: at these rates a 1M-token bundle quotes at 1,000 sats,
+  # half the GLM-4.7 bundle, so it is also the cheapest way to exercise the
+  # paid path end to end.
+  "deepseek-ai/DeepSeek-V4-Flash-0731":
+    inputusdpermtok: 0.13
+    outputusdpermtok: 0.26
   "zai-org/GLM-4.7":
     inputusdpermtok: 0.60
     outputusdpermtok: 2.20

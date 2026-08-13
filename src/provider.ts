@@ -1,4 +1,10 @@
-import { type ClientReceipt, createPayingFetch, TokenCache, type TokenStore } from "@aperture/client";
+import {
+	type ClientReceipt,
+	type CredentialStore,
+	createPayingFetch,
+	TokenCache,
+	type TokenStore,
+} from "@aperture/client";
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
 import {
 	type Api,
@@ -10,6 +16,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
+import { mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";
 
 export interface StreamDeps {
@@ -21,16 +28,31 @@ export interface StreamDeps {
 	// with the process.
 	tokenStore?: TokenStore;
 
+	// credentialStore holds paid Payment credentials, the MPP counterpart to
+	// tokenStore. Durable storage keeps a retry that throws after the money
+	// moved from turning into a second payment on the next attempt.
+	credentialStore?: CredentialStore;
+
 	// receiptLog receives one record per settled payment, stamped with the
 	// model the payment bought inference for. Absent in mock mode, so fake
 	// spends never pollute the real ledger.
 	receiptLog?: { store(receipt: ReceiptRecord): Promise<void> | void };
+
+	// returnInvoiceMinter mints the amountless refund invoice a session
+	// deposit needs at open. The embedded wallet cannot provide one, so the
+	// extension leaves this unset and the session intent stays refused; the
+	// dev harness wires one from a local lnd to exercise the session flow
+	// on regtest.
+	returnInvoiceMinter?: {
+		mintAmountlessInvoice(input: { origin: string; realm: string; memo?: string }): Promise<{ invoice: string }>;
+	};
 }
 
 // BASETEN_MODEL_SLUGS maps the Pi-facing model ids (kept slash-free so they
 // compose with Pi's provider/model selection) to the full Baseten Model APIs
 // slugs sent on the wire.
 const BASETEN_MODEL_SLUGS: Record<string, string> = {
+	"deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash-0731",
 	"glm-4.7": "zai-org/GLM-4.7",
 	"glm-5": "zai-org/GLM-5",
 	"glm-5.2": "zai-org/GLM-5.2",
@@ -108,13 +130,34 @@ export function makeStreamSimple(deps: StreamDeps) {
 						}
 					: undefined;
 
-				// The paying fetch runs the L402 buyer loop: detect 402, assert the
-				// budget policy, pay via the wallet, cache the token, and retry.
+				// The paying fetch runs the buyer loop: detect 402, assert the
+				// budget policy, pay via the wallet, cache the credential, and
+				// retry. Which scheme it answers with is the seller's choice
+				// as narrowed by ours: aperture with --enablempp offers a
+				// Payment challenge alongside L402 in one merged header, and
+				// mppIntents decides whether we take it.
 				const payingFetch = createPayingFetch({
 					payer: deps.payer,
 					buyerPolicy: deps.policy,
 					tokenCache,
 					receiptCache,
+					mpp: {
+						// The session intent is only usable with a minter for
+						// the amountless refund invoice an open must carry;
+						// mppIntents refuses it otherwise, so a deposit is
+						// never paid for an open the server is guaranteed to
+						// refuse.
+						intents: mppIntents({
+							hasReturnInvoiceMinter: deps.returnInvoiceMinter !== undefined,
+						}),
+						credentialCache: deps.credentialStore,
+						returnInvoiceMinter: deps.returnInvoiceMinter,
+						onReceiptMismatch: ({ receipt, reasons }) => {
+							console.warn(
+								`pi-402: payment receipt ${receipt.reference} disagrees with what was paid for: ${reasons.join("; ")}`,
+							);
+						},
+					},
 				});
 
 				const wireModel = wireModelId(model.id);

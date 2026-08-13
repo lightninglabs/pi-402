@@ -4,7 +4,7 @@ import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
 import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
 import { makeStreamSimple } from "./provider.ts";
-import { dataDir, FileReceiptLog, FileTokenStore } from "./store.ts";
+import { dataDir, FileCredentialStore, FileReceiptLog, FileTokenStore } from "./store.ts";
 import { WalletService } from "./wallet.ts";
 
 // PROVIDER_ID is the model provider this extension registers. Users select it
@@ -34,6 +34,7 @@ export default function (pi: ExtensionAPI): void {
 	// keeping fake spends out of the real ledger.
 	const stateDir = dataDir();
 	const tokenStore = mockMode ? undefined : new FileTokenStore(join(stateDir, "tokens.json"));
+	const credentialStore = mockMode ? undefined : new FileCredentialStore(join(stateDir, "credentials.json"));
 	const receiptLog = mockMode ? undefined : new FileReceiptLog(join(stateDir, "receipts.ndjson"));
 
 	// The daily cap is seeded from the ledger, so a restart mid-day cannot
@@ -56,6 +57,19 @@ export default function (pi: ExtensionAPI): void {
 		// The proxy holds the real model credential; Pi sends no API key.
 		apiKey: "unused",
 		models: [
+			{
+				// Maps to deepseek-ai/DeepSeek-V4-Flash-0731 on the wire.
+				// The budget option: its bundle quotes at roughly half a
+				// GLM-4.7 bundle, so it is also the cheapest way to
+				// exercise the paid path end to end.
+				id: "deepseek-v4-flash",
+				name: "DeepSeek V4 Flash (L402)",
+				input: ["text"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 32_768,
+			},
 			{
 				// The Pi-facing id is slash-free; the provider maps it to
 				// the Baseten Model APIs slug (zai-org/GLM-4.7) on the wire.
@@ -90,7 +104,7 @@ export default function (pi: ExtensionAPI): void {
 				maxTokens: 32_768,
 			},
 		],
-		streamSimple: makeStreamSimple({ payer, policy, tokenStore, receiptLog }),
+		streamSimple: makeStreamSimple({ payer, policy, tokenStore, credentialStore, receiptLog }),
 	});
 
 	registerWalletCommands(pi, wallet);

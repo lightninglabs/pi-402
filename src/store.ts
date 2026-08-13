@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CachedToken, ClientReceipt, TokenStore } from "@aperture/client";
+import type { CachedCredential, CachedToken, ClientReceipt, CredentialStore, TokenStore } from "@aperture/client";
 
 // dataDir resolves the directory durable state lives in. The directory is
 // created lazily by the stores on first write.
@@ -136,6 +136,145 @@ export class FileTokenStore implements TokenStore {
 		const tmpPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
 		await writeFile(tmpPath, JSON.stringify(state, null, "\t"), { mode: 0o600 });
 		await rename(tmpPath, this.path);
+	}
+}
+
+// credentialStoreState is the JSON serialization of the credential store file.
+interface CredentialStoreState {
+	version: 1;
+	credentials: Record<string, CachedCredential>;
+}
+
+// isCredentialExpired reports whether a cached credential is past its expiry.
+// The rule matches the token store's: no expiry means the challenge carried
+// none, and an expiry that fails to parse counts as expired rather than
+// immortal.
+function isCredentialExpired(credential: CachedCredential): boolean {
+	if (!credential.expiresAt) {
+		return false;
+	}
+	const expiresMs = Date.parse(credential.expiresAt);
+	return Number.isNaN(expiresMs) || Date.now() > expiresMs;
+}
+
+// FileCredentialStore is a CredentialStore backed by a JSON file, the Payment
+// scheme's counterpart to FileTokenStore.
+//
+// What it protects against is narrow but expensive: the paid retry throws
+// after the money moved, the caller retries, and without the credential on
+// disk the client fetches a fresh challenge and pays for the same thing a
+// second time. A stored credential turns that into at worst one refused
+// request. It holds an Authorization header for a settled payment, so the
+// file gets the same owner-only permissions and atomic replacement the token
+// store gets.
+//
+// The concurrency story also matches the token store's, and is worth
+// restating here because parallel model calls make racing puts likely: the
+// file is shared by concurrent sessions, reads are always fresh, and a write
+// re-reads and merges before rewriting, so one session's paid credential is
+// not clobbered by another persisting its own. The read-merge-write is not
+// atomic, though, across processes or across concurrent puts within one, so
+// two writes racing in the same instant can still lose a credential. That
+// window is tiny, and its worst case is bounded: the retry the lost
+// credential would have served re-purchases one request's worth.
+export class FileCredentialStore implements CredentialStore {
+	private readonly path: string;
+
+	constructor(path: string) {
+		this.path = path;
+	}
+
+	// readState reads and parses the state file fresh, dropping expired
+	// entries. The failure handling matches FileTokenStore for the same
+	// reasons: a missing file is a fresh start, a corrupt file is set aside
+	// rather than deleted, and any other read failure propagates so that one
+	// transient error cannot rewrite the file down to a single entry.
+	private async readState(): Promise<Map<string, CachedCredential>> {
+		let raw: string;
+		try {
+			raw = await readFile(this.path, "utf8");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+				return new Map();
+			}
+			throw err;
+		}
+
+		try {
+			const state = JSON.parse(raw) as CredentialStoreState;
+			const credentials = new Map<string, CachedCredential>();
+			for (const [key, credential] of Object.entries(state.credentials ?? {})) {
+				if (
+					credential &&
+					typeof credential === "object" &&
+					typeof credential.authorization === "string" &&
+					!isCredentialExpired(credential)
+				) {
+					credentials.set(key, credential);
+				}
+			}
+			return credentials;
+		} catch {
+			console.warn(`pi-402: credential store ${this.path} is corrupt, setting it aside`);
+			try {
+				await rename(this.path, `${this.path}.${Date.now()}.corrupt`);
+			} catch {
+				// Another session already set it aside; losing that race is
+				// fine.
+			}
+			return new Map();
+		}
+	}
+
+	// write replaces the file with the given entries, merging happening in the
+	// callers so that put and delete share one atomic rewrite.
+	private async write(credentials: Map<string, CachedCredential>): Promise<void> {
+		const state: CredentialStoreState = {
+			version: 1,
+			credentials: Object.fromEntries(credentials),
+		};
+		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+
+		const tmpPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+		await writeFile(tmpPath, JSON.stringify(state, null, "\t"), { mode: 0o600 });
+		await rename(tmpPath, this.path);
+	}
+
+	async get(key: string): Promise<CachedCredential | null> {
+		// An unreadable store is a reason to buy, not a reason to fail: the
+		// worst case is re-purchasing one credential, which is exactly where
+		// the caller would be with no store at all.
+		try {
+			return (await this.readState()).get(key) ?? null;
+		} catch (err) {
+			console.warn(`pi-402: credential store ${this.path} is unreadable, continuing without it:`, err);
+			return null;
+		}
+	}
+
+	async put(key: string, credential: CachedCredential): Promise<void> {
+		const credentials = await this.readState();
+		credentials.set(key, credential);
+		await this.write(credentials);
+	}
+
+	async delete(key: string): Promise<void> {
+		// A delete means the server refused this credential, so dropping it
+		// matters more than preserving it. An unreadable store leaves nothing
+		// to delete from, and throwing here would fail a request whose
+		// credential is already known bad.
+		let credentials: Map<string, CachedCredential>;
+		try {
+			credentials = await this.readState();
+		} catch (err) {
+			console.warn(`pi-402: credential store ${this.path} is unreadable, cannot drop ${key}:`, err);
+			return;
+		}
+
+		if (!credentials.delete(key)) {
+			return;
+		}
+		await this.write(credentials);
 	}
 }
 

@@ -33,6 +33,93 @@ export function maxSatPerRequest(): number {
 	return readSatCeiling("PI402_MAX_SAT_PER_REQUEST", DEFAULT_MAX_SAT_PER_REQUEST);
 }
 
+// PaymentScheme selects which HTTP authentication schemes the buyer will
+// answer a 402 with.
+export type PaymentScheme = "auto" | "l402";
+
+// paymentScheme reads the scheme preference from PI402_PAYMENT_SCHEME.
+//
+// The default is "auto": take a Payment (MPP) offer when the seller makes
+// one, and fall back to L402 otherwise. Aperture with --enablempp offers both
+// in a single merged WWW-Authenticate, so "auto" is what exercises MPP.
+// Setting "l402" pins the buyer to the older scheme, which is the escape
+// hatch if a seller's Payment offer turns out to be unsatisfiable.
+//
+// An unrecognized value throws rather than silently falling back. A typo in
+// the scheme name should not quietly change which protocol the money moves
+// over.
+export function paymentScheme(): PaymentScheme {
+	const raw = process.env.PI402_PAYMENT_SCHEME;
+	if (raw === undefined || raw === "") {
+		return "auto";
+	}
+
+	const value = raw.trim().toLowerCase();
+	if (value === "auto" || value === "l402") {
+		return value;
+	}
+
+	throw new Error(`PI402_PAYMENT_SCHEME must be "auto" or "l402", got ${JSON.stringify(raw)}`);
+}
+
+// mppIntents returns the Payment intents to accept, most wanted first.
+//
+// Under "l402" the list is empty, so no Payment offer matches and the buyer
+// takes the L402 door. Otherwise the default is "charge" alone: a session
+// holds a deposit the seller owes back, and reclaiming it needs a refund
+// invoice the wallet must mint and a close the process must remember to
+// send. Charge settles each request on its own and leaves nothing
+// outstanding, which is the right default for a wallet running unattended
+// inside an editor.
+//
+// PI402_MPP_INTENTS opts into more, as a comma-separated preference list
+// drawn from "session" and "charge".
+//
+// The session intent additionally requires a return-invoice minter. A
+// session's unspent deposit comes back through an amountless refund invoice
+// the buyer must supply at open, and the reference server refuses an open
+// without one, so a buyer with no minter would pay deposits whose opens are
+// guaranteed to be refused. The swap-backed embedded wallet cannot mint
+// amountless invoices (the daemon refuses a zero amount), so the extension
+// has no minter today and sessions stay off there; the dev harness can wire
+// one from a local lnd, which is what makes the regtest session flow
+// testable. A wavelength-side amountless receive is the upstream seam that
+// lifts this for the extension.
+export function mppIntents(options?: { hasReturnInvoiceMinter?: boolean }): readonly string[] {
+	if (paymentScheme() === "l402") {
+		return [];
+	}
+
+	const raw = process.env.PI402_MPP_INTENTS;
+	if (raw === undefined || raw === "") {
+		return ["charge"];
+	}
+
+	const intents = raw
+		.split(",")
+		.map((intent) => intent.trim().toLowerCase())
+		.filter((intent) => intent !== "");
+
+	for (const intent of intents) {
+		if (intent !== "charge" && intent !== "session") {
+			throw new Error(`PI402_MPP_INTENTS entries must be "charge" or "session", got ${JSON.stringify(intent)}`);
+		}
+	}
+	if (intents.length === 0) {
+		throw new Error("PI402_MPP_INTENTS must name at least one intent when set");
+	}
+
+	if (intents.includes("session") && !options?.hasReturnInvoiceMinter) {
+		throw new Error(
+			"PI402_MPP_INTENTS includes sessions, but no return-invoice minter is available: a session's " +
+				"refund needs an amountless invoice the embedded wallet cannot mint, and the server refuses " +
+				"an open without one, so the deposit would be paid for a guaranteed refusal",
+		);
+	}
+
+	return intents;
+}
+
 // utcDayKey returns a stable key for the current UTC calendar day, used to reset
 // the daily counter at the day boundary.
 function utcDayKey(now: Date): string {
