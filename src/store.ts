@@ -167,6 +167,16 @@ function isCredentialExpired(credential: CachedCredential): boolean {
 // request. It holds an Authorization header for a settled payment, so the
 // file gets the same owner-only permissions and atomic replacement the token
 // store gets.
+//
+// The concurrency story also matches the token store's, and is worth
+// restating here because parallel model calls make racing puts likely: the
+// file is shared by concurrent sessions, reads are always fresh, and a write
+// re-reads and merges before rewriting, so one session's paid credential is
+// not clobbered by another persisting its own. The read-merge-write is not
+// atomic, though, across processes or across concurrent puts within one, so
+// two writes racing in the same instant can still lose a credential. That
+// window is tiny, and its worst case is bounded: the retry the lost
+// credential would have served re-purchases one request's worth.
 export class FileCredentialStore implements CredentialStore {
 	private readonly path: string;
 
