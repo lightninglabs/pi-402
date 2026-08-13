@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { WalletService } from "../src/wallet.ts";
+import { assertSeedIsSafeToGenerate, WalletService, withFetchEnabled, writeSeedFile } from "../src/wallet.ts";
 
 // A wallet that was never started has neither backend wired, so any call that
 // reaches one fails with "wallet not started". These tests lean on that: if
@@ -249,4 +249,253 @@ test("startAndUnlock leaves an already-unlocked wallet alone", async () => {
 		stub.restore();
 		delete process.env.PI402_WALLETD_GATEWAY;
 	}
+});
+
+test("startAndUnlock writes the generated seed beside the wallet", async () => {
+	const env = await walletDirEnv();
+	const words = ["abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract"];
+
+	const stub = embeddedStub({
+		start: () => ({}),
+		unlockWallet: () => {
+			throw new Error("wallet does not exist");
+		},
+		createWallet: (req) => {
+			// Generating must not carry restore fields: a fresh wallet has no
+			// history for the daemon to go and scan for.
+			assert.equal(req.Mnemonic, undefined);
+			assert.equal(req.RecoverState, undefined);
+			assert.equal(req.RecoveryWindow, undefined);
+			return { Mnemonic: words };
+		},
+		status: () => ({ Ready: true }),
+	});
+
+	try {
+		await new WalletService().startAndUnlock();
+
+		const seedPath = join(env.dir, "seed.txt");
+		assert.equal(await readFile(seedPath, "utf8"), `${words.join(" ")}\n`);
+		assert.equal((await stat(seedPath)).mode & 0o777, 0o600, "the seed file must be owner-only");
+	} finally {
+		stub.restore();
+		env.restore();
+	}
+});
+
+test("startAndUnlock restores a supplied mnemonic and writes no seed file", async () => {
+	const env = await walletDirEnv();
+	process.env.PI402_WALLET_MNEMONIC = "  alpha   beta\tgamma\ndelta ";
+
+	const stub = embeddedStub({
+		start: () => ({}),
+		unlockWallet: () => {
+			throw new Error("wallet does not exist");
+		},
+		createWallet: (req) => {
+			// The words arrive split on any whitespace, and a restore asks
+			// the daemon to scan for the wallet's history, since the local
+			// database knows nothing about it.
+			assert.deepEqual(req.Mnemonic, ["alpha", "beta", "gamma", "delta"]);
+			assert.equal(req.RecoverState, true);
+			assert.equal(req.RecoveryWindow, 100);
+			return {};
+		},
+		status: () => ({ Ready: true }),
+	});
+
+	try {
+		await new WalletService().startAndUnlock();
+
+		// The restored seed is already in the operator's hands; a second
+		// copy on disk would add an exposure and no safety.
+		assert.ok(!existsSync(join(env.dir, "seed.txt")), "a restore must not write a seed file");
+	} finally {
+		stub.restore();
+		env.restore();
+		delete process.env.PI402_WALLET_MNEMONIC;
+	}
+});
+
+test("writeSeedFile never overwrites an existing seed file", async () => {
+	const env = await walletDirEnv();
+
+	try {
+		writeSeedFile(["first", "words"]);
+		// The exclusive flag is what protects the words of a wallet that may
+		// still hold money from a later create clobbering them.
+		assert.throws(() => writeSeedFile(["second", "words"]), /EEXIST/);
+		assert.equal(await readFile(join(env.dir, "seed.txt"), "utf8"), "first words\n");
+	} finally {
+		env.restore();
+	}
+});
+
+test("writeSeedFile refuses a create that returned no seed words", async () => {
+	const env = await walletDirEnv();
+
+	try {
+		for (const bad of [undefined, null, [], "not an array"]) {
+			assert.throws(() => writeSeedFile(bad), /returned no seed words/);
+		}
+		assert.ok(!existsSync(join(env.dir, "seed.txt")));
+	} finally {
+		env.restore();
+	}
+});
+
+test("assertSeedIsSafeToGenerate gates a plaintext mainnet seed", () => {
+	const savedNetwork = process.env.PI402_NETWORK;
+	const savedAllow = process.env.PI402_ALLOW_PLAINTEXT_SEED;
+
+	try {
+		// On a test network the seed file is plain recoverability, so the
+		// gate stays out of the way.
+		process.env.PI402_NETWORK = "regtest";
+		delete process.env.PI402_ALLOW_PLAINTEXT_SEED;
+		assertSeedIsSafeToGenerate();
+
+		// On mainnet the same file is a key to real money in the clear, so
+		// generating one is refused until the operator opts in explicitly.
+		process.env.PI402_NETWORK = "mainnet";
+		assert.throws(() => assertSeedIsSafeToGenerate(), /refusing to generate a mainnet wallet seed/);
+
+		process.env.PI402_ALLOW_PLAINTEXT_SEED = "1";
+		assertSeedIsSafeToGenerate();
+	} finally {
+		if (savedNetwork === undefined) {
+			delete process.env.PI402_NETWORK;
+		} else {
+			process.env.PI402_NETWORK = savedNetwork;
+		}
+		if (savedAllow === undefined) {
+			delete process.env.PI402_ALLOW_PLAINTEXT_SEED;
+		} else {
+			process.env.PI402_ALLOW_PLAINTEXT_SEED = savedAllow;
+		}
+	}
+});
+
+// setGlobalProcess swaps globalThis.process the same way withFetchEnabled
+// does, so the tests can stand in a "real" process whose argv0 they control
+// no matter how the test runner itself was invoked.
+function setGlobalProcess(value: unknown): void {
+	Object.defineProperty(globalThis, "process", {
+		value,
+		writable: true,
+		configurable: true,
+		enumerable: false,
+	});
+}
+
+test("withFetchEnabled shadows argv0 for the run and restores on a throw", () => {
+	const actual = globalThis.process;
+	const fakeReal = Object.create(actual, { argv0: { value: "node", enumerable: true } });
+	setGlobalProcess(fakeReal);
+
+	let observed: NodeJS.Process | undefined;
+	try {
+		assert.throws(
+			() =>
+				withFetchEnabled(() => {
+					observed = globalThis.process;
+					throw new Error("boom");
+				}),
+			/boom/,
+		);
+
+		// The shim was in place during the run: argv0 no longer names node,
+		// while everything else still resolves through the prototype to the
+		// real process, environment included.
+		assert.notEqual(observed, fakeReal);
+		assert.equal(observed?.argv0, "pi402-embedded-wallet");
+		assert.equal(observed?.pid, actual.pid);
+		assert.deepEqual(observed?.env, actual.env);
+
+		// A throw inside the run must still put the real object back.
+		assert.equal(globalThis.process, fakeReal, "the real process must be restored after a throw");
+	} finally {
+		setGlobalProcess(actual);
+	}
+});
+
+test("withFetchEnabled leaves a non-node host alone", () => {
+	const actual = globalThis.process;
+	const fakeReal = Object.create(actual, { argv0: { value: "bun", enumerable: true } });
+	setGlobalProcess(fakeReal);
+
+	try {
+		let observed: NodeJS.Process | undefined;
+		withFetchEnabled(() => {
+			observed = globalThis.process;
+		});
+
+		// Go only disables fetch when argv0 names node, so any other host
+		// needs no shim, and the run must see the untouched object.
+		assert.equal(observed, fakeReal);
+	} finally {
+		setGlobalProcess(actual);
+	}
+});
+
+test("awaitWalletReady gives up once its deadline passes", async () => {
+	const wallet = new WalletService();
+	// The daemon answers, but never becomes ready.
+	(wallet as any).call = async () => ({ Ready: false });
+
+	// Jump the clock 61 seconds per reading, so the first poll is already
+	// past the 60 second deadline and the test never sleeps for real.
+	const realNow = Date.now;
+	let clock = 0;
+	Date.now = () => {
+		clock += 61_000;
+		return clock;
+	};
+
+	try {
+		await assert.rejects(() => (wallet as any).awaitWalletReady(), /did not become ready/);
+	} finally {
+		Date.now = realNow;
+	}
+});
+
+test("readPreimageWasm surfaces a failed send instead of waiting out the clock", async () => {
+	const wallet = new WalletService();
+
+	// An entry for another payment first, so the hash filter is exercised,
+	// then the failure for ours.
+	const entries: unknown[] = [
+		{ Progress: { PaymentHash: "feed" }, Status: "confirmed" },
+		{ Progress: { PaymentHash: "abcd" }, Status: "failed", FailureReason: "no route" },
+	];
+	const handle = {
+		next: async () => entries.shift() ?? null,
+		close: () => {},
+	};
+
+	await assert.rejects(() => (wallet as any).readPreimageWasm(handle, "abcd"), /send failed: no route/);
+});
+
+test("readPreimageWasm times out when the settle never arrives", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+
+	// A stream that never delivers: next() stays pending until close(),
+	// which is exactly what the timeout handler calls.
+	let releaseNext: ((entry: null) => void) | undefined;
+	const handle = {
+		next: () =>
+			new Promise<null>((resolve) => {
+				releaseNext = resolve;
+			}),
+		close: () => releaseNext?.(null),
+	};
+
+	const wallet = new WalletService();
+	const pending = assert.rejects(
+		() => (wallet as any).readPreimageWasm(handle, "abcd"),
+		/timed out waiting for preimage of abcd/,
+	);
+
+	t.mock.timers.tick(120_000);
+	await pending;
 });

@@ -628,7 +628,9 @@ function restoreMnemonic(): string[] {
 // for whoever is deploying, not a default this extension should pick for them,
 // so mainnet either restores a seed the operator already holds or says plainly
 // what it is being asked to do.
-function assertSeedIsSafeToGenerate(): void {
+//
+// Exported for tests.
+export function assertSeedIsSafeToGenerate(): void {
 	const isMainnet = (process.env.PI402_NETWORK ?? "regtest") === "mainnet";
 	if (!isMainnet || envFlag("PI402_ALLOW_PLAINTEXT_SEED") === true) {
 		return;
@@ -671,7 +673,9 @@ function assertNoStaleSeedFile(): void {
 // It is written once, and never over an existing file: a second write would
 // mean the wallet was recreated, and clobbering the previous words would
 // destroy the only copy of a key that may still hold funds.
-function writeSeedFile(mnemonic: unknown): void {
+//
+// Exported for tests.
+export function writeSeedFile(mnemonic: unknown): void {
 	if (!Array.isArray(mnemonic) || mnemonic.length === 0) {
 		throw new Error(
 			"the wallet was created but returned no seed words, so there " +
@@ -962,7 +966,9 @@ async function loadWavewalletdk(onExit: (err: unknown) => void): Promise<Wavewal
 // so it is read during Go's package initialization, which runs in the
 // synchronous part of go.run before it yields, and the real object is back in
 // place before any other code observes the swap.
-function withFetchEnabled(run: () => void): void {
+//
+// Exported for tests.
+export function withFetchEnabled(run: () => void): void {
 	const real = globalThis.process;
 	if (typeof real?.argv0 !== "string" || !real.argv0.startsWith("node")) {
 		run();
