@@ -65,13 +65,61 @@ export function paymentScheme(): PaymentScheme {
 // mppIntents returns the Payment intents to accept, most wanted first.
 //
 // Under "l402" the list is empty, so no Payment offer matches and the buyer
-// takes the L402 door. Otherwise only "charge" is accepted: a session holds a
-// deposit the seller owes back, and reclaiming it needs a refund invoice the
-// wallet must mint and a close the process must remember to send. Charge
-// settles each request on its own and leaves nothing outstanding, which is
-// the right default for a wallet running unattended inside an editor.
+// takes the L402 door. Otherwise the default is "charge" alone: a session
+// holds a deposit the seller owes back, and reclaiming it needs a refund
+// invoice the wallet must mint and a close the process must remember to
+// send. Charge settles each request on its own and leaves nothing
+// outstanding, which is the right default for a wallet running unattended
+// inside an editor.
+//
+// PI402_MPP_INTENTS opts into more, as a comma-separated preference list
+// drawn from "session" and "charge". Opting into sessions currently also
+// requires PI402_MPP_ALLOW_REFUNDLESS_SESSION=1: the protocol reclaims a
+// session's unspent deposit through an amountless return invoice minted at
+// open, and the swap-backed embedded wallet cannot mint amountless invoices
+// yet, so every session it opens forfeits whatever balance is left at close.
+// That is an acceptable cost on a test network and a deliberate one anywhere
+// else, which is exactly what an explicit opt-in encodes.
 export function mppIntents(): readonly string[] {
-	return paymentScheme() === "l402" ? [] : ["charge"];
+	if (paymentScheme() === "l402") {
+		return [];
+	}
+
+	const raw = process.env.PI402_MPP_INTENTS;
+	if (raw === undefined || raw === "") {
+		return ["charge"];
+	}
+
+	const intents = raw
+		.split(",")
+		.map((intent) => intent.trim().toLowerCase())
+		.filter((intent) => intent !== "");
+
+	for (const intent of intents) {
+		if (intent !== "charge" && intent !== "session") {
+			throw new Error(`PI402_MPP_INTENTS entries must be "charge" or "session", got ${JSON.stringify(intent)}`);
+		}
+	}
+	if (intents.length === 0) {
+		throw new Error("PI402_MPP_INTENTS must name at least one intent when set");
+	}
+
+	if (intents.includes("session") && !allowRefundlessSessions()) {
+		throw new Error(
+			"PI402_MPP_INTENTS includes sessions, but the embedded wallet cannot mint the amountless " +
+				"refund invoice a session needs, so any unspent deposit is forfeited at close; set " +
+				"PI402_MPP_ALLOW_REFUNDLESS_SESSION=1 to accept that",
+		);
+	}
+
+	return intents;
+}
+
+// allowRefundlessSessions reports whether the operator has accepted that a
+// session's unspent deposit is forfeited at close. See mppIntents for why
+// this is currently a precondition of the session intent at all.
+export function allowRefundlessSessions(): boolean {
+	return process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION === "1";
 }
 
 // utcDayKey returns a stable key for the current UTC calendar day, used to reset

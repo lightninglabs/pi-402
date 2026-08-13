@@ -235,3 +235,58 @@ test("mppIntents never offers session, which would strand a deposit", async (t) 
 	delete process.env.PI402_PAYMENT_SCHEME;
 	assert.ok(!mppIntents().includes("session"));
 });
+
+test("mppIntents reads a preference list from PI402_MPP_INTENTS", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+		delete process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION;
+	});
+
+	process.env.PI402_MPP_INTENTS = "session, charge";
+	process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION = "1";
+	assert.deepEqual(mppIntents(), ["session", "charge"]);
+});
+
+test("mppIntents refuses sessions without the refundless opt-in", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	// The embedded wallet cannot mint the amountless refund invoice a
+	// session needs, so every session forfeits its unspent deposit at
+	// close. Opting into that silently would be opting into losing money
+	// silently.
+	process.env.PI402_MPP_INTENTS = "session,charge";
+	assert.throws(() => mppIntents(), /PI402_MPP_ALLOW_REFUNDLESS_SESSION/);
+});
+
+test("mppIntents rejects an unknown intent name", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_MPP_INTENTS = "charge,bearer";
+	assert.throws(() => mppIntents(), /must be "charge" or "session"/);
+});
+
+test("mppIntents rejects a list that names nothing", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_MPP_INTENTS;
+	});
+
+	process.env.PI402_MPP_INTENTS = " , ";
+	assert.throws(() => mppIntents(), /at least one intent/);
+});
+
+test("the l402 pin still empties the list regardless of intents", async (t) => {
+	t.after(() => {
+		delete process.env.PI402_PAYMENT_SCHEME;
+		delete process.env.PI402_MPP_INTENTS;
+		delete process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION;
+	});
+
+	process.env.PI402_PAYMENT_SCHEME = "l402";
+	process.env.PI402_MPP_INTENTS = "session,charge";
+	process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION = "1";
+	assert.deepEqual(mppIntents(), []);
+});

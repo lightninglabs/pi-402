@@ -16,7 +16,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
-import { mppIntents } from "./policy.ts";
+import { allowRefundlessSessions, mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";
 
 export interface StreamDeps {
@@ -135,10 +135,14 @@ export function makeStreamSimple(deps: StreamDeps) {
 					mpp: {
 						intents: mppIntents(),
 						credentialCache: deps.credentialStore,
-						// No return-invoice minter is wired, so a session
-						// offer would strand its unspent deposit. Leaving
-						// allowSessionWithoutRefund off makes the client
-						// decline sessions and take the charge instead.
+						// No return-invoice minter is wired, because the
+						// embedded wallet cannot mint the amountless invoice
+						// a refund needs. Sessions therefore only run when
+						// the operator has explicitly accepted forfeiting
+						// the unspent deposit at close; mppIntents refuses
+						// the session intent without that opt-in, so this
+						// flag being true is never a surprise.
+						allowSessionWithoutRefund: allowRefundlessSessions(),
 						onReceiptMismatch: ({ receipt, reasons }) => {
 							console.warn(
 								`pi-402: payment receipt ${receipt.reference} disagrees with what was paid for: ${reasons.join("; ")}`,
