@@ -99,6 +99,11 @@ export class WalletService {
 	private gateway: string | undefined;
 	private call: WavewalletdkCall | undefined;
 
+	// runtimeExited flips when the embedded Go runtime stops running. The
+	// dispatcher global it installed may still exist, but nothing answers it
+	// any more, so calls have to fail fast rather than hang against it.
+	private runtimeExited = false;
+
 	// startAndUnlock brings up the selected backend and unlocks the wallet,
 	// creating it on the first run. It is bootstrapped once per session from
 	// the session_start hook.
@@ -151,7 +156,7 @@ export class WalletService {
 			return;
 		}
 
-		this.call = await loadWavewalletdk();
+		this.call = await loadWavewalletdk((err) => this.noteRuntimeExit(err));
 		await this.call("start", startConfigFromEnv());
 
 		// WalletPassword is a []byte on the SDK struct, and encoding/json
@@ -497,7 +502,26 @@ export class WalletService {
 		return payload;
 	}
 
+	// noteRuntimeExit records that the embedded Go runtime is gone. The
+	// program is supposed to run for the lifetime of the process, so any exit
+	// is the wallet dying, and the only useful things to do are say so once,
+	// with the error when there is one, and make every later call fail fast
+	// with that story instead of a timeout or a hang.
+	private noteRuntimeExit(err: unknown): void {
+		this.runtimeExited = true;
+		this.ready = false;
+
+		if (err === undefined) {
+			console.error("[pi-402] embedded wallet runtime exited");
+		} else {
+			console.error("[pi-402] embedded wallet runtime exited:", err);
+		}
+	}
+
 	private requireCall(): WavewalletdkCall {
+		if (this.runtimeExited) {
+			throw new Error("the embedded wallet runtime exited; restart the session to bring the wallet back up");
+		}
 		if (!this.call) {
 			throw new Error("wallet not started; run startAndUnlock first");
 		}
@@ -845,9 +869,13 @@ const WASM_BINARY = "wavewalletdk.wasm";
 //     from this directory and loads sqlite3.js, sqlite-worker.js and
 //     sqlite-node-vfs.js out of it. Without it the worker resolves those
 //     relative to a page URL that does not exist here.
-async function loadWavewalletdk(): Promise<WavewalletdkCall> {
+// The onExit callback fires once if the Go program ever stops running, with
+// the error that killed it when there is one.
+async function loadWavewalletdk(onExit: (err: unknown) => void): Promise<WavewalletdkCall> {
 	const g = globalThis as any;
 
+	// An existing dispatcher means an earlier load in this process owns the
+	// runtime, and that load's own exit watcher is the one wired to it.
 	const existing = g[WASM_GLOBAL];
 	if (typeof existing === "function") {
 		return existing as WavewalletdkCall;
@@ -890,10 +918,18 @@ async function loadWavewalletdk(): Promise<WavewalletdkCall> {
 	const wasmBytes = readFileSync(join(wasmDir, WASM_BINARY));
 	const { instance } = await WebAssembly.instantiate(wasmBytes, go.importObject);
 
-	// The Go program runs for the lifetime of the process; do not await it.
+	// The Go program runs for the lifetime of the process, so its run promise
+	// is not awaited. It is watched, though: discarding it outright would
+	// make a runtime death invisible, leaving every later call to fail as an
+	// unexplained timeout or hang, with the root cause logged nowhere.
+	let running: Promise<unknown> | undefined;
 	withFetchEnabled(() => {
-		void go.run(instance);
+		running = go.run(instance) as Promise<unknown>;
 	});
+	running?.then(
+		() => onExit(undefined),
+		(err: unknown) => onExit(err),
+	);
 
 	// The bridge installs the dispatcher once the runtime is up. It also
 	// fires a ready event, but that can race the listener, so poll for the
