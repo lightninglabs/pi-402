@@ -1,18 +1,28 @@
-import { readFileSync } from "node:fs";
+import nodeFs, { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { maxSatPerRequest } from "./policy.ts";
+import { dataDir } from "./store.ts";
 
-// WalletService runs against one of two walletdk backends:
+// WalletService runs against one of two wavewalletdk backends:
 //
-// - **Sidecar** (PI402_WALLETD_GATEWAY set): a native darepod built with the
-//   walletdkrpc tag, driven over its HTTP/JSON gateway (default
-//   localhost:10031). This is the path for Node hosts like Pi, where the
-//   WASM's OPFS-backed SQLite is unavailable.
-// - **Embedded WASM**: the walletdk-wasm bridge in-process, for browser-like
-//   hosts with OPFS. The bridge installs a global walletdkCall dispatcher;
-//   requests take proto-style snake_case fields while responses marshal the
-//   SDK's Go structs with PascalCase fields.
-type WalletdkCall = (method: string, req?: unknown) => Promise<any>;
+// - **Embedded WASM** (the default): the wavewalletdk-wasm bridge in-process,
+//   with no separate daemon to run. SQLite persists through OPFS in a browser
+//   and through the nodefs VFS under Node, so this is the path for a Node
+//   host like Pi as much as for a page. The bridge installs a global
+//   wavewalletdkCall dispatcher.
+//
+//   Its verbs, apart from start, marshal the SDK's own Go structs in both
+//   directions, so requests use the same PascalCase field names the responses
+//   come back with, and a []byte field is base64. Only start is different: it
+//   is handed through to the daemon's config parser, which reads the
+//   snake_case keys a waved config file uses. Getting this backwards is quiet
+//   rather than loud, because encoding/json ignores a field it cannot match,
+//   so a misspelled request arrives as the zero value.
+// - **Sidecar** (PI402_WALLETD_GATEWAY set): a native waved, driven over its
+//   HTTP/JSON gateway (default localhost:10031). This is for pointing at a
+//   wallet that is already running, or one shared with something else.
+type WavewalletdkCall = (method: string, req?: unknown) => Promise<any>;
 
 // SubscriptionHandle is what the WASM bridge's subscribe resolves to: a pull
 // stream of wallet entries.
@@ -68,13 +78,20 @@ export interface PayResult {
 // payer gives up. Ark↔Lightning swaps take seconds; minutes means stuck.
 const PREIMAGE_TIMEOUT_MS = 120_000;
 
+// WALLET_READY_TIMEOUT_MS bounds the wait for the embedded daemon to finish
+// bringing up the actors behind an unlocked wallet, and WALLET_READY_POLL_MS
+// is how often it is asked. This takes a second or two against a healthy
+// operator; a minute means something upstream is not answering.
+const WALLET_READY_TIMEOUT_MS = 60_000;
+const WALLET_READY_POLL_MS = 200;
+
 // WalletService exposes the operations the extension needs: paying an L402
 // invoice, reading the balance, and producing a boarding address for
 // deposits.
 export class WalletService {
 	private ready = false;
 	private gateway: string | undefined;
-	private call: WalletdkCall | undefined;
+	private call: WavewalletdkCall | undefined;
 
 	// startAndUnlock brings up the selected backend and unlocks the wallet,
 	// creating it on the first run. It is bootstrapped once per session from
@@ -128,10 +145,19 @@ export class WalletService {
 			return;
 		}
 
-		this.call = await loadWalletdk();
+		this.call = await loadWavewalletdk();
 		await this.call("start", startConfigFromEnv());
+
+		// WalletPassword is a []byte on the SDK struct, and encoding/json
+		// reads a []byte from base64. The name has to be the struct's, not
+		// the gateway's wallet_password: Go matches field names
+		// case-insensitively but an underscore is not a case difference, so
+		// that spelling matches nothing, decodes to an empty password, and
+		// comes back as "wallet password must be at least 8 bytes". The
+		// password is not weak, it never arrived.
+		const passwordB64 = Buffer.from(password).toString("base64");
 		try {
-			await this.call("unlockWallet", { wallet_password: password });
+			await this.call("unlockWallet", { WalletPassword: passwordB64 });
 		} catch (err) {
 			// As with the sidecar path, only create when the failure genuinely
 			// means the wallet does not exist yet; otherwise rethrow so a wrong
@@ -139,15 +165,54 @@ export class WalletService {
 			if (!isWalletMissingError(err)) {
 				throw err;
 			}
-			await this.call("createWallet", { wallet_password: password });
+			await this.call("createWallet", { WalletPassword: passwordB64 });
 		}
+
+		// Unlocking returns before the daemon has finished standing up the
+		// actors behind it, so the wallet is not usable the instant this
+		// resolves. Waiting here rather than letting the caller find out
+		// keeps the race out of every call site: the alternative is that
+		// whatever runs first after the session_start bootstrap fails with
+		// "wallet actor not initialized", which reads like a broken wallet
+		// rather than one that was asked too early.
+		await this.awaitWalletReady();
+
 		this.ready = true;
 	}
 
-	// payInvoice pays a BOLT11 invoice via a two-phase walletdk send.
+	// awaitWalletReady polls until the embedded daemon reports its wallet
+	// usable, or gives up with an error naming the wait.
+	//
+	// The signal is Status.Ready rather than the walletReady verb. The latter
+	// reports GetInfo's view, which flips as soon as the wallet is unlocked
+	// and while the actors that actually serve requests are still starting.
+	// Trusting it leaves a window of a few hundred milliseconds in which a
+	// boarding address or a send fails with "wallet actor not initialized",
+	// which is the sort of race that passes locally and breaks under load.
+	private async awaitWalletReady(): Promise<void> {
+		const call = this.requireCall();
+		const deadline = Date.now() + WALLET_READY_TIMEOUT_MS;
+
+		for (;;) {
+			const status = await call("status");
+			if (status?.Ready) {
+				return;
+			}
+
+			if (Date.now() > deadline) {
+				throw new Error(
+					`the embedded wallet did not become ready within ` + `${WALLET_READY_TIMEOUT_MS / 1000}s of unlocking`,
+				);
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, WALLET_READY_POLL_MS));
+		}
+	}
+
+	// payInvoice pays a BOLT11 invoice via a two-phase wavewalletdk send.
 	// prepareSend quotes the payment (including the swap fee), send
 	// dispatches it, and the preimage is read from the settled entry once
-	// the swap completes (darepo-client#835).
+	// the swap completes.
 	//
 	// The budget cap is re-asserted here, after the quote, on the QUOTED TOTAL
 	// OUTFLOW (invoice principal plus swap fee) rather than the counterparty's
@@ -182,15 +247,15 @@ export class WalletService {
 		}
 
 		const call = this.requireCall();
-		const quote = await call("prepareSend", { invoice });
+		const quote = await call("prepareSend", { Invoice: invoice });
 		const outflow = quotedOutflowSat(quote);
 		assertWithinCeiling(outflow, ceiling);
 
 		// Same ordering as the sidecar path: subscribe before sendPrepared so a
 		// fast settle cannot be missed.
-		const handle: SubscriptionHandle = await call("subscribe", { include_existing: true });
+		const handle: SubscriptionHandle = await call("subscribe", { IncludeExisting: true });
 		try {
-			await call("sendPrepared", { send_intent_id: quote.SendIntentID });
+			await call("sendPrepared", { SendIntentID: quote.SendIntentID });
 			const preimageHex = await this.readPreimageWasm(handle, String(quote.PaymentHash));
 			return {
 				preimageHex,
@@ -274,7 +339,7 @@ export class WalletService {
 
 	// readPreimageRest reads the gateway's NDJSON WalletEntry stream until the
 	// send for the given payment hash settles, then returns the preimage riding
-	// entry.progress.preimage (darepo-client#835).
+	// entry.progress.preimage.
 	private async readPreimageRest(stream: RestWalletStream, paymentHash: string): Promise<string> {
 		// timedOut distinguishes our own deadline abort from any other read
 		// rejection, so the timeout surfaces as a descriptive error rather than
@@ -372,7 +437,7 @@ export class WalletService {
 		return payload;
 	}
 
-	private requireCall(): WalletdkCall {
+	private requireCall(): WavewalletdkCall {
 		if (!this.call) {
 			throw new Error("wallet not started; run startAndUnlock first");
 		}
@@ -386,21 +451,71 @@ function startConfigFromEnv(): Record<string, unknown> {
 	const network = process.env.PI402_NETWORK ?? "regtest";
 	const isMainnet = network === "mainnet";
 
-	// Insecure transport is a dev-harness affordance for the local regtest/
-	// testnet stack. On mainnet it would send funds over an unauthenticated,
-	// unencrypted channel, so gate it to non-mainnet networks only.
-	const insecure = !isMainnet;
+	// Only regtest gets endpoints from here. Every other network has hosted
+	// operator, swap and chain endpoints that the embedded daemon resolves
+	// from the network name, so naming them would mean shipping a second copy
+	// of that list to drift against the first. Regtest is the exception
+	// because there is nothing hosted to resolve: the endpoints are whatever
+	// the local compose stack published.
+	const isLocal = network === "regtest";
 
-	return {
+	// Insecure transport belongs to a local endpoint, not to a network.
+	// Deriving it from "not mainnet" was wrong the moment this stopped being
+	// regtest-only: the signet operator and swap server are reached over TLS
+	// on 443, and asking for plaintext there fails to connect rather than
+	// falling back.
+	const insecure = envFlag("PI402_SERVER_INSECURE") ?? isLocal;
+
+	// A Node host has a real filesystem, so the wasm entry point refuses the
+	// browser default of /wavelength rather than trying to create it: that is
+	// a path at the filesystem root, and os.MkdirAll there fails with EROFS or
+	// EACCES. It wants an explicit directory, and the natural one is beside
+	// the token cache and receipt ledger under the pi-402 data directory.
+	// REST rather than gRPC, always. This is a property of the host and not
+	// of the network: the wasm build has no gRPC transport at all, because
+	// gRPC needs a socket and js/wasm has none, so connecting that way fails
+	// with "wavewalletdk gRPC transport is unavailable". The operator and
+	// swap server publish a grpc-gateway REST endpoint for exactly this, and
+	// the daemon resolves the right one per network once it is told which
+	// transport to want.
+	const config: Record<string, unknown> = {
 		network,
-		data_dir: process.env.PI402_WALLET_DIR ?? "/darepo",
-		server_address: process.env.PI402_ARK_SERVER ?? "127.0.0.1:7070",
-		server_insecure: insecure,
-		swap_server_address: process.env.PI402_SWAP_SERVER ?? "127.0.0.1:8082",
-		swap_server_insecure: insecure,
-		wallet_esplora_url: process.env.PI402_ESPLORA_URL ?? "http://127.0.0.1:3002",
+		data_dir: process.env.PI402_WALLET_DIR ?? join(dataDir(), "wallet"),
 		allow_mainnet: isMainnet,
+		server_transport: "rest",
+		swap_server_transport: "rest",
 	};
+
+	const arkServer = process.env.PI402_ARK_SERVER ?? (isLocal ? "127.0.0.1:7070" : "");
+	if (arkServer) {
+		config.server_address = arkServer;
+		config.server_insecure = insecure;
+	}
+
+	const swapServer = process.env.PI402_SWAP_SERVER ?? (isLocal ? "127.0.0.1:8082" : "");
+	if (swapServer) {
+		config.swap_server_address = swapServer;
+		config.swap_server_insecure = insecure;
+	}
+
+	const esplora = process.env.PI402_ESPLORA_URL ?? (isLocal ? "http://127.0.0.1:3002" : "");
+	if (esplora) {
+		config.wallet_esplora_url = esplora;
+	}
+
+	return config;
+}
+
+// envFlag reads a boolean environment override, returning undefined when the
+// variable is unset so a caller can tell "not configured" from "configured
+// false".
+function envFlag(name: string): boolean | undefined {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") {
+		return undefined;
+	}
+
+	return raw === "1" || raw.toLowerCase() === "true";
 }
 
 // resolveWalletPassword returns the wallet password from the environment. On
@@ -546,24 +661,38 @@ function isWalletMissingError(err: unknown): boolean {
 	);
 }
 
-// loadWalletdk instantiates the walletdk WASM binary and resolves the
-// walletdkCall global. The artifact directory (walletdk.wasm plus Go's
-// wasm_exec.js glue, built with `make wasm-wallet` in darepo-client) is
-// located via PI402_WASM_DIR or a bundled ./wasm directory.
+// WASM_GLOBAL is the dispatcher the wasm bridge installs once its Go runtime
+// is up, and WASM_BINARY is the artifact that installs it. Both names come
+// from cmd/wavewalletdk-wasm in wavelength and have to match it exactly.
+const WASM_GLOBAL = "wavewalletdkCall";
+const WASM_BINARY = "wavewalletdk.wasm";
+
+// loadWavewalletdk instantiates the wavewalletdk WASM binary and resolves its
+// call dispatcher. The artifact directory holds that binary, Go's wasm_exec.js
+// glue, and the SQLite runtime assets, all produced by `make wasm-wallet` in
+// wavelength. It is located via PI402_WASM_DIR or a bundled ./wasm directory.
 //
-// NOTE: the WASM's SQLite persistence rides sqlite-bridge.js, which needs a
-// Web Worker and OPFS; under plain Node the daemon fails at the database
-// open. Node hosts should use the sidecar backend (PI402_WALLETD_GATEWAY)
-// until the bridge grows a Node story.
-async function loadWalletdk(): Promise<WalletdkCall> {
-	const existing = (globalThis as any).walletdkCall;
+// Two globals have to be in place before the module is instantiated, and both
+// are what make this work under Node rather than only in a browser:
+//
+//   - globalThis.fs. Go's wasm_exec.js installs a stub filesystem whose every
+//     call fails with ENOSYS, but only when the host has not already provided
+//     one. Handing it node:fs is what lets the daemon create its data
+//     directory and lets the nodefs SQLite VFS reach the disk.
+//   - globalThis.sqliteBridgeAssetDir. The bridge spawns its SQLite worker
+//     from this directory and loads sqlite3.js, sqlite-worker.js and
+//     sqlite-node-vfs.js out of it. Without it the worker resolves those
+//     relative to a page URL that does not exist here.
+async function loadWavewalletdk(): Promise<WavewalletdkCall> {
+	const g = globalThis as any;
+
+	const existing = g[WASM_GLOBAL];
 	if (typeof existing === "function") {
-		return existing as WalletdkCall;
+		return existing as WavewalletdkCall;
 	}
 
 	// The bridge dispatches lifecycle CustomEvents on globalThis, which is
 	// not an EventTarget under Node; back those methods with one.
-	const g = globalThis as any;
 	if (typeof g.dispatchEvent !== "function") {
 		const events = new EventTarget();
 		g.addEventListener = events.addEventListener.bind(events);
@@ -572,6 +701,18 @@ async function loadWalletdk(): Promise<WalletdkCall> {
 	}
 
 	const wasmDir = process.env.PI402_WASM_DIR ?? join(import.meta.dirname, "..", "wasm");
+
+	// Fail here, naming the file, rather than letting the wallet come up
+	// against a bundle missing the pieces its database needs and discover it
+	// as an unexplained open failure much later.
+	requireWasmAssets(wasmDir);
+
+	// Both of these are read during instantiation, so they have to be set
+	// before it rather than after.
+	g.fs ??= nodeFs;
+	g.sqliteBridgeAssetDir = wasmDir;
+
+	loadSqliteBridge(wasmDir);
 
 	// Evaluate Go's wasm_exec.js glue, which defines globalThis.Go.
 	const glue = readFileSync(join(wasmDir, "wasm_exec.js"), "utf8");
@@ -584,18 +725,126 @@ async function loadWalletdk(): Promise<WalletdkCall> {
 	}
 
 	const go = new GoRuntime();
-	const wasmBytes = readFileSync(join(wasmDir, "walletdk.wasm"));
+	const wasmBytes = readFileSync(join(wasmDir, WASM_BINARY));
 	const { instance } = await WebAssembly.instantiate(wasmBytes, go.importObject);
 
 	// The Go program runs for the lifetime of the process; do not await it.
-	void go.run(instance);
+	withFetchEnabled(() => {
+		void go.run(instance);
+	});
 
-	// The bridge installs walletdkCall once the runtime is up. It also
-	// fires a walletdk-ready event, but that can race the listener, so
-	// poll for the global instead.
-	await waitForGlobal("walletdkCall", 30_000);
+	// The bridge installs the dispatcher once the runtime is up. It also
+	// fires a ready event, but that can race the listener, so poll for the
+	// global instead.
+	await waitForGlobal(WASM_GLOBAL, 30_000);
 
-	return g.walletdkCall as WalletdkCall;
+	return g[WASM_GLOBAL] as WavewalletdkCall;
+}
+
+// withFetchEnabled runs the Go program's start-up with a process object whose
+// argv0 does not name Node, so the wallet can reach the network.
+//
+// Go's js/wasm net/http turns the Fetch API off when it sees a Node host, and
+// decides that with a literal prefix test on process.argv0 (roundtrip_js.go,
+// go.dev/issue/57613). What it falls back to is the js/wasm fake network,
+// which has no sockets, so every request the daemon makes dies in the resolver
+// with "write udp 127.0.0.1:8". A browser never sees this because there the
+// test is false and fetch is used. The wasm build talks to the operator, the
+// swap server and esplora over REST, all of which fetch serves perfectly well,
+// so this is only about clearing a check aimed at an older Node.
+//
+// argv0 on the real process object is neither writable nor configurable, so
+// the stand-in is an object that inherits from it and shadows that one
+// property. A Proxy cannot do this: reporting a value other than the target's
+// for a non-configurable, non-writable data property violates an invariant the
+// engine enforces, and it throws. Inheritance has no such rule, and every
+// other property still resolves through the prototype to the real process.
+//
+// The window is as small as it can be. The flag is a package-level variable,
+// so it is read during Go's package initialization, which runs in the
+// synchronous part of go.run before it yields, and the real object is back in
+// place before any other code observes the swap.
+function withFetchEnabled(run: () => void): void {
+	const real = globalThis.process;
+	if (typeof real?.argv0 !== "string" || !real.argv0.startsWith("node")) {
+		run();
+
+		return;
+	}
+
+	const shim = Object.create(real);
+	Object.defineProperty(shim, "argv0", {
+		value: "pi402-embedded-wallet",
+		enumerable: true,
+	});
+
+	const install = (value: unknown) =>
+		Object.defineProperty(globalThis, "process", {
+			value,
+			writable: true,
+			configurable: true,
+			enumerable: false,
+		});
+
+	install(shim);
+	try {
+		run();
+	} finally {
+		install(real);
+	}
+}
+
+// loadSqliteBridge evaluates sqlite-bridge.js, which installs the
+// globalThis.sqliteBridge the driver looks for. A browser gets this from a
+// script tag; there is no equivalent here, and without it the wallet's first
+// database open fails with "sqlite bridge not loaded".
+//
+// The file is an IIFE that reaches for require() to pull in node:path and
+// node:worker_threads. This module is ESM, where require is not a global, so
+// one is built for it and passed in as a parameter of the wrapping function.
+// Evaluating the source rather than importing the path also sidesteps the
+// question of how a ".js" file inside a "type": "module" package would be
+// interpreted, which is the same reason the bridge evaluates its own worker.
+function loadSqliteBridge(wasmDir: string): void {
+	if ((globalThis as any).sqliteBridge) {
+		return;
+	}
+
+	const source = readFileSync(join(wasmDir, "sqlite-bridge.js"), "utf8");
+	// eslint-disable-next-line no-new-func
+	new Function("require", source)(createRequire(import.meta.url));
+
+	if (!(globalThis as any).sqliteBridge) {
+		throw new Error("sqlite-bridge.js did not install globalThis.sqliteBridge");
+	}
+}
+
+// WASM_ASSETS is every file the bundle has to carry. sqlite-node-vfs.js is the
+// one that is easy to miss: it ships in the same asset set but is loaded only
+// by a Node host, so a bundle staged before that file existed looks complete
+// and fails at the first database open.
+const WASM_ASSETS = [
+	"wasm_exec.js",
+	WASM_BINARY,
+	"sqlite3.js",
+	"sqlite3.wasm",
+	"sqlite-bridge.js",
+	"sqlite-worker.js",
+	"sqlite-node-vfs.js",
+];
+
+// requireWasmAssets checks the bundle is complete before anything is loaded.
+function requireWasmAssets(wasmDir: string): void {
+	const missing = WASM_ASSETS.filter((name) => !existsSync(join(wasmDir, name)));
+	if (missing.length === 0) {
+		return;
+	}
+
+	throw new Error(
+		`wasm bundle at ${wasmDir} is missing ${missing.join(", ")}; ` +
+			"rebuild it with `make wasm-wallet` in wavelength and point " +
+			"PI402_WASM_DIR at the resulting bin/wasm",
+	);
 }
 
 // waitForGlobal polls for a global symbol installed by the WASM bridge.
@@ -603,7 +852,7 @@ async function waitForGlobal(name: string, timeoutMs: number): Promise<void> {
 	const start = Date.now();
 	while (typeof (globalThis as any)[name] !== "function") {
 		if (Date.now() - start > timeoutMs) {
-			throw new Error(`walletdk WASM did not install ${name} within ${timeoutMs}ms`);
+			throw new Error(`wavewalletdk WASM did not install ${name} within ${timeoutMs}ms`);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
