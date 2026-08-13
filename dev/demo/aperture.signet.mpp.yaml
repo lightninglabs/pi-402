@@ -12,6 +12,10 @@
 # the seller's Wavelength wallet, and the Baseten credential is read from
 # aperture's environment rather than from this file, so pi never sees it.
 listenaddr: "127.0.0.1:8505"
+# Deliberately short for the live streaming proof: a ~9 second GLM stream
+# crosses this absolute deadline, so completing anyway demonstrates the
+# rolling write deadline carrying a healthy stream.
+writetimeout: 5s
 insecure: true
 servestatic: false
 autocert: false

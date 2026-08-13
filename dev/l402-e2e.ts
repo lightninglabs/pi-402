@@ -172,8 +172,109 @@ async function main() {
 		return { before, after, spent: before - after };
 	}
 
+	// runSessionScenario proves the session intent end to end: one deposit
+	// opens a session, later requests ride it as bearers without touching
+	// the wallet, and close reports what came back. The refund invoice is
+	// minted from the demo stack's lnd, since a session's open must carry an
+	// amountless invoice and the embedded wallet cannot produce one.
+	async function runSessionScenario(proxyUrl: string) {
+		line(`MPP session lifecycle  (against ${proxyUrl})`);
+
+		process.env.PI402_PAYMENT_SCHEME = "auto";
+		process.env.PI402_MPP_INTENTS = "session,charge";
+		const { mppIntents } = await import("../src/policy.ts");
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const exec = promisify(execFile);
+
+		const lndContainer = process.env.PI402_REFUND_LND_CONTAINER ?? "ark-lnd-server";
+		const minter = {
+			async mintAmountlessInvoice(input: { origin: string; realm: string; memo?: string }) {
+				const { stdout } = await exec("docker", [
+					"exec",
+					lndContainer,
+					"lncli",
+					"--network=regtest",
+					"addinvoice",
+					"--memo",
+					input.memo ?? `pi-402 session refund (${input.realm})`,
+				]);
+				const parsed = JSON.parse(stdout) as { payment_request?: string };
+				if (!parsed.payment_request) {
+					throw new Error("lncli addinvoice returned no payment_request");
+				}
+				console.log(`    refund invoice minted from ${lndContainer}: ${abbreviate(parsed.payment_request, 40)}`);
+				return { invoice: parsed.payment_request };
+			},
+		};
+
+		const payingFetch = createPayingFetch({
+			payer,
+			buyerPolicy: policy,
+			tokenCache: tokenStore,
+			receiptCache: {
+				store: async (receipt: unknown) => {
+					await receiptLog.store({ ...(receipt as never), model } as never);
+				},
+			},
+			mpp: {
+				intents: mppIntents({ hasReturnInvoiceMinter: true }),
+				credentialCache: credentialStore,
+				returnInvoiceMinter: minter,
+			},
+		});
+
+		const client = new OpenAI({
+			baseURL: proxyUrl,
+			apiKey: "unused",
+			fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+				payingFetch(input, { ...init, routeId: model } as never)) as typeof fetch,
+		});
+
+		const askOnce = async (label: string, prompt: string) => {
+			const before = await wallet.confirmedBalanceSat();
+			// The fake upstream only speaks SSE, so ask for a stream and
+			// accumulate the chunks into one reply.
+			const stream = await client.chat.completions.create({
+				model,
+				messages: [{ role: "user", content: prompt }],
+				max_tokens: 80,
+				stream: true,
+			});
+			let reply = "";
+			for await (const chunk of stream) {
+				reply += chunk.choices[0]?.delta?.content ?? "";
+			}
+			const after = await wallet.confirmedBalanceSat();
+			console.log(`    ${label}: spent ${before - after} sat, reply: ${reply.slice(0, 60)}`);
+			return before - after;
+		};
+
+		// The first request pays the deposit and opens the session; the ones
+		// after it must ride the session without touching the wallet.
+		const depositSpend = await askOnce("open (pays the deposit)", "Say hi in three words.");
+		const bearerSpend1 = await askOnce("bearer 1 (expect 0 spend)", "Say hello in three words.");
+		const bearerSpend2 = await askOnce("bearer 2 (expect 0 spend)", "Say hey in three words.");
+
+		if (bearerSpend1 !== 0 || bearerSpend2 !== 0) {
+			console.log("    \x1b[31mSESSION LEAK: a bearer request touched the wallet\x1b[0m");
+		} else {
+			console.log(`    \x1b[32msession held: one deposit (${depositSpend} sat), bearers rode free\x1b[0m`);
+		}
+
+		line("closing the session");
+		const outcomes = await payingFetch.closeSessions();
+		for (const outcome of outcomes) {
+			console.log(`    close: ${JSON.stringify(outcome)}`);
+		}
+	}
+
 	for (const scenario of scenarios) {
 		switch (scenario) {
+			case "session":
+				await runSessionScenario(process.env.SESSION_PROXY_URL ?? "http://127.0.0.1:8406/v1");
+				break;
+
 			case "l402":
 				await ask(
 					"L402 paid inference",

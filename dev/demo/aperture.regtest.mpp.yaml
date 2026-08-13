@@ -1,0 +1,40 @@
+# Aperture for the regtest demo profile with the Payment (MPP) scheme and the
+# session intent enabled.
+#
+# This runs beside the profile's L402-only instance on 8404, the same way the
+# signet MPP instance runs beside 8504: same seller wallet, same pricer, its
+# own port and database. Sessions are on here and nowhere else, because the
+# session flow is what this instance exists to prove: open with a deposit,
+# bearer draw-down, close. There is no lnd behind aperture on this profile, so
+# it has no PaymentSender: a close still reports the refund owed in its
+# receipt, but marks the attempt failed rather than paying it out.
+#
+# The short write timeout mirrors the signet streaming proof: any streamed
+# generation that outlives it only completes because the rolling write
+# deadline carries it.
+listenaddr: "127.0.0.1:8406"
+writetimeout: 5s
+insecure: true
+servestatic: false
+autocert: false
+dbbackend: "sqlite"
+sqlite:
+  databasefilename: "aperture-mpp.db"  # under the regtest state dir
+authenticator:
+  network: "regtest"
+  wavelengthgateway: "http://localhost:10061"
+  enablempp: true
+  mpprealm: "pi-402 regtest"
+  enablesessions: true
+services:
+  - name: "inference"
+    hostregexp: ".*"
+    pathregexp: "^/v1/.*"
+    address: "127.0.0.1:8410"
+    protocol: "http"
+    auth: "on"
+    dynamicprice:
+      enabled: true
+      grpcaddress: "127.0.0.1:10025"
+      insecure: true
+      metered: true
