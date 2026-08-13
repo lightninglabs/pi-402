@@ -241,7 +241,7 @@ export class WalletService {
 
 			if (Date.now() > deadline) {
 				throw new Error(
-					`the embedded wallet did not become ready within ` + `${WALLET_READY_TIMEOUT_MS / 1000}s of unlocking`,
+					`the embedded wallet did not become ready within ${WALLET_READY_TIMEOUT_MS / 1000}s of unlocking`,
 				);
 			}
 
@@ -525,6 +525,14 @@ function startConfigFromEnv(): Record<string, unknown> {
 		server_transport: "rest",
 		swap_server_transport: "rest",
 	};
+
+	// The embedded daemon logs through this process, so its verbosity is
+	// worth being able to raise without editing code. A stuck swap says
+	// almost nothing at info level.
+	const debugLevel = process.env.PI402_DEBUG_LEVEL;
+	if (debugLevel) {
+		config.debug_level = debugLevel;
+	}
 
 	const arkServer = process.env.PI402_ARK_SERVER ?? (isLocal ? "127.0.0.1:7070" : "");
 	if (arkServer) {
