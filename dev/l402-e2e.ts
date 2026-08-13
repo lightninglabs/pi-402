@@ -19,7 +19,7 @@
 // It stays running afterwards so the wallet keeps its Ark state live and the
 // control channel remains available.
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createPayingFetch } from "@aperture/client";
@@ -33,7 +33,11 @@ import { WalletService } from "../src/wallet.ts";
 const l402ProxyUrl = process.env.L402_PROXY_URL ?? "http://127.0.0.1:8504";
 const mppProxyUrl = process.env.MPP_PROXY_URL ?? l402ProxyUrl;
 const model = process.env.PI402_TEST_MODEL ?? "zai-org/GLM-4.7";
-const ctrlDir = process.env.PI402_CTRL_DIR ?? "/tmp/pi402-ctrl";
+// The control channel executes arbitrary wallet verbs from files in this
+// directory, so it defaults under the pi-402 data directory rather than a
+// world-writable /tmp, where anyone on the machine could pre-create it and
+// feed the wallet a send.
+const ctrlDir = process.env.PI402_CTRL_DIR ?? join(dataDir(), "ctrl");
 const scenarios = (process.env.PI402_E2E_SCENARIOS ?? "l402,cached").split(",").map((s) => s.trim());
 
 function line(msg: string) {
@@ -232,6 +236,29 @@ async function main() {
 	line("PAID INFERENCE OK");
 
 	// Keep the wallet alive and answering, exactly as the daemon did.
+	//
+	// Anything that can drop a file in ctrlDir can drive the wallet, so the
+	// directory has to be ours alone before a single command is served.
+	// mkdir with a mode does not tighten a directory that already exists, so
+	// the stat check is what actually decides: not owned by this uid, or
+	// readable by anyone else, means someone else may write commands, and
+	// the channel stays off.
+	mkdirSync(ctrlDir, { recursive: true, mode: 0o700 });
+	const ctrlStat = statSync(ctrlDir);
+	const uid = process.getuid?.();
+	const ctrlPrivate = (uid === undefined || ctrlStat.uid === uid) && (ctrlStat.mode & 0o777) === 0o700;
+	if (!ctrlPrivate) {
+		console.error(
+			`\ncontrol channel disabled: ${ctrlDir} must be owned by uid ${uid} with mode 0700 ` +
+				`(found uid ${ctrlStat.uid}, mode ${(ctrlStat.mode & 0o777).toString(8)})`,
+		);
+		console.log("\n(wallet staying up; control channel OFF)");
+		// Stay alive all the same, so refusing the channel does not drop the
+		// wallet and its lock.
+		setInterval(() => {}, 1 << 30);
+		return;
+	}
+
 	const cmdPath = join(ctrlDir, "cmd.json");
 	const replyPath = join(ctrlDir, "reply.json");
 	const call = (globalThis as { wavewalletdkCall?: (verb: string, req?: unknown) => Promise<unknown> })
