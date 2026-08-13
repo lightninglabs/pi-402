@@ -1,4 +1,4 @@
-import nodeFs, { existsSync, readFileSync } from "node:fs";
+import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { maxSatPerRequest } from "./policy.ts";
@@ -85,6 +85,12 @@ const PREIMAGE_TIMEOUT_MS = 120_000;
 const WALLET_READY_TIMEOUT_MS = 60_000;
 const WALLET_READY_POLL_MS = 200;
 
+// WALLET_RECOVERY_WINDOW is how many unused addresses a restore scans past
+// before deciding it has found the end of the wallet's history. This is the
+// usual gap limit, and it only applies when a seed is restored: a wallet this
+// extension generated has no history to look for.
+const WALLET_RECOVERY_WINDOW = 100;
+
 // WalletService exposes the operations the extension needs: paying an L402
 // invoice, reading the balance, and producing a boarding address for
 // deposits.
@@ -165,7 +171,7 @@ export class WalletService {
 			if (!isWalletMissingError(err)) {
 				throw err;
 			}
-			await this.call("createWallet", { WalletPassword: passwordB64 });
+			await this.createEmbeddedWallet(passwordB64);
 		}
 
 		// Unlocking returns before the daemon has finished standing up the
@@ -178,6 +184,40 @@ export class WalletService {
 		await this.awaitWalletReady();
 
 		this.ready = true;
+	}
+
+	// createEmbeddedWallet makes the wallet on first run, restoring a seed the
+	// operator supplied or generating one and writing it down.
+	//
+	// Generating a seed and discarding it is the one outcome not on offer.
+	// The wallet's database is the only record of a generated key, so losing
+	// the data directory would take the funds with it, and nothing would have
+	// warned anyone that was possible.
+	private async createEmbeddedWallet(passwordB64: string): Promise<void> {
+		const call = this.requireCall();
+		const mnemonic = restoreMnemonic();
+
+		const req: Record<string, unknown> = { WalletPassword: passwordB64 };
+		if (mnemonic.length > 0) {
+			req.Mnemonic = mnemonic;
+
+			// A restored seed has history the local database knows nothing
+			// about, so ask the daemon to go and find it. Without this the
+			// wallet comes back correct but empty until something else
+			// triggers a scan.
+			req.RecoverState = true;
+			req.RecoveryWindow = WALLET_RECOVERY_WINDOW;
+		} else {
+			assertSeedIsSafeToGenerate();
+		}
+
+		const created = await call("createWallet", req);
+
+		// A restored wallet's seed is already in the operator's hands, so
+		// writing a second copy would add an exposure and no safety.
+		if (mnemonic.length === 0) {
+			writeSeedFile(created?.Mnemonic);
+		}
 	}
 
 	// awaitWalletReady polls until the embedded daemon reports its wallet
@@ -480,7 +520,7 @@ function startConfigFromEnv(): Record<string, unknown> {
 	// transport to want.
 	const config: Record<string, unknown> = {
 		network,
-		data_dir: process.env.PI402_WALLET_DIR ?? join(dataDir(), "wallet"),
+		data_dir: walletDataDir(),
 		allow_mainnet: isMainnet,
 		server_transport: "rest",
 		swap_server_transport: "rest",
@@ -504,6 +544,77 @@ function startConfigFromEnv(): Record<string, unknown> {
 	}
 
 	return config;
+}
+
+// walletDataDir is where the embedded daemon keeps its databases, and beside
+// them the seed of a wallet this extension generated.
+function walletDataDir(): string {
+	return process.env.PI402_WALLET_DIR ?? join(dataDir(), "wallet");
+}
+
+// SEED_FILE is the name the generated mnemonic is written under.
+const SEED_FILE = "seed.txt";
+
+// restoreMnemonic reads a seed the operator wants restored, as the words
+// separated by whitespace. Empty means generate a fresh one.
+function restoreMnemonic(): string[] {
+	const raw = (process.env.PI402_WALLET_MNEMONIC ?? "").trim();
+	if (raw === "") {
+		return [];
+	}
+
+	return raw.split(/\s+/);
+}
+
+// assertSeedIsSafeToGenerate refuses to generate a mainnet seed that would be
+// written to disk in the clear.
+//
+// On a test network the seed file is the difference between a recoverable
+// wallet and a disposable one, and the funds it protects are worth nothing.
+// On mainnet the same file is a key to real money sitting next to the database
+// it unlocks, readable by anything running as this user. That is a decision
+// for whoever is deploying, not a default this extension should pick for them,
+// so mainnet either restores a seed the operator already holds or says plainly
+// what it is being asked to do.
+function assertSeedIsSafeToGenerate(): void {
+	const isMainnet = (process.env.PI402_NETWORK ?? "regtest") === "mainnet";
+	if (!isMainnet || envFlag("PI402_ALLOW_PLAINTEXT_SEED") === true) {
+		return;
+	}
+
+	throw new Error(
+		"refusing to generate a mainnet wallet seed, which would be " +
+			"written to disk in the clear: either restore a seed you " +
+			"already hold with PI402_WALLET_MNEMONIC, or set " +
+			"PI402_ALLOW_PLAINTEXT_SEED=1 to accept a plaintext seed " +
+			`file at ${join(walletDataDir(), SEED_FILE)}`,
+	);
+}
+
+// writeSeedFile records a freshly generated mnemonic beside the wallet.
+//
+// It is written once, and never over an existing file: a second write would
+// mean the wallet was recreated, and clobbering the previous words would
+// destroy the only copy of a key that may still hold funds.
+function writeSeedFile(mnemonic: unknown): void {
+	if (!Array.isArray(mnemonic) || mnemonic.length === 0) {
+		throw new Error(
+			"the wallet was created but returned no seed words, so there " +
+				"is nothing to back it up with; refusing to continue with " +
+				"an unrecoverable wallet",
+		);
+	}
+
+	const dir = walletDataDir();
+	const path = join(dir, SEED_FILE);
+
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${mnemonic.join(" ")}\n`, { mode: 0o600, flag: "wx" });
+
+	console.error(
+		`[pi-402] created a new wallet; its seed is at ${path}. Back it up: ` +
+			"it is the only copy, and the wallet cannot be recovered without it.",
+	);
 }
 
 // envFlag reads a boolean environment override, returning undefined when the
