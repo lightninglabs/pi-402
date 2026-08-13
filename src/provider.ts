@@ -16,7 +16,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import OpenAI from "openai";
-import { allowRefundlessSessions, mppIntents } from "./policy.ts";
+import { mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";
 
 export interface StreamDeps {
@@ -37,6 +37,15 @@ export interface StreamDeps {
 	// model the payment bought inference for. Absent in mock mode, so fake
 	// spends never pollute the real ledger.
 	receiptLog?: { store(receipt: ReceiptRecord): Promise<void> | void };
+
+	// returnInvoiceMinter mints the amountless refund invoice a session
+	// deposit needs at open. The embedded wallet cannot provide one, so the
+	// extension leaves this unset and the session intent stays refused; the
+	// dev harness wires one from a local lnd to exercise the session flow
+	// on regtest.
+	returnInvoiceMinter?: {
+		mintAmountlessInvoice(input: { origin: string; realm: string; memo?: string }): Promise<{ invoice: string }>;
+	};
 }
 
 // BASETEN_MODEL_SLUGS maps the Pi-facing model ids (kept slash-free so they
@@ -133,16 +142,16 @@ export function makeStreamSimple(deps: StreamDeps) {
 					tokenCache,
 					receiptCache,
 					mpp: {
-						intents: mppIntents(),
+						// The session intent is only usable with a minter for
+						// the amountless refund invoice an open must carry;
+						// mppIntents refuses it otherwise, so a deposit is
+						// never paid for an open the server is guaranteed to
+						// refuse.
+						intents: mppIntents({
+							hasReturnInvoiceMinter: deps.returnInvoiceMinter !== undefined,
+						}),
 						credentialCache: deps.credentialStore,
-						// No return-invoice minter is wired, because the
-						// embedded wallet cannot mint the amountless invoice
-						// a refund needs. Sessions therefore only run when
-						// the operator has explicitly accepted forfeiting
-						// the unspent deposit at close; mppIntents refuses
-						// the session intent without that opt-in, so this
-						// flag being true is never a surprise.
-						allowSessionWithoutRefund: allowRefundlessSessions(),
+						returnInvoiceMinter: deps.returnInvoiceMinter,
 						onReceiptMismatch: ({ receipt, reasons }) => {
 							console.warn(
 								`pi-402: payment receipt ${receipt.reference} disagrees with what was paid for: ${reasons.join("; ")}`,

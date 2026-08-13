@@ -239,25 +239,23 @@ test("mppIntents never offers session, which would strand a deposit", async (t) 
 test("mppIntents reads a preference list from PI402_MPP_INTENTS", async (t) => {
 	t.after(() => {
 		delete process.env.PI402_MPP_INTENTS;
-		delete process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION;
 	});
 
 	process.env.PI402_MPP_INTENTS = "session, charge";
-	process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION = "1";
-	assert.deepEqual(mppIntents(), ["session", "charge"]);
+	assert.deepEqual(mppIntents({ hasReturnInvoiceMinter: true }), ["session", "charge"]);
 });
 
-test("mppIntents refuses sessions without the refundless opt-in", async (t) => {
+test("mppIntents refuses sessions without a return-invoice minter", async (t) => {
 	t.after(() => {
 		delete process.env.PI402_MPP_INTENTS;
 	});
 
-	// The embedded wallet cannot mint the amountless refund invoice a
-	// session needs, so every session forfeits its unspent deposit at
-	// close. Opting into that silently would be opting into losing money
-	// silently.
+	// A session's open must carry an amountless refund invoice and the
+	// server refuses an open without one, so opting into sessions with no
+	// way to mint that invoice would pay deposits for guaranteed refusals.
 	process.env.PI402_MPP_INTENTS = "session,charge";
-	assert.throws(() => mppIntents(), /PI402_MPP_ALLOW_REFUNDLESS_SESSION/);
+	assert.throws(() => mppIntents(), /guaranteed refusal/);
+	assert.throws(() => mppIntents({ hasReturnInvoiceMinter: false }), /guaranteed refusal/);
 });
 
 test("mppIntents rejects an unknown intent name", async (t) => {
@@ -282,11 +280,9 @@ test("the l402 pin still empties the list regardless of intents", async (t) => {
 	t.after(() => {
 		delete process.env.PI402_PAYMENT_SCHEME;
 		delete process.env.PI402_MPP_INTENTS;
-		delete process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION;
 	});
 
 	process.env.PI402_PAYMENT_SCHEME = "l402";
 	process.env.PI402_MPP_INTENTS = "session,charge";
-	process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION = "1";
-	assert.deepEqual(mppIntents(), []);
+	assert.deepEqual(mppIntents({ hasReturnInvoiceMinter: true }), []);
 });

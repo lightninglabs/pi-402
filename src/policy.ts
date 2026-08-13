@@ -73,14 +73,19 @@ export function paymentScheme(): PaymentScheme {
 // inside an editor.
 //
 // PI402_MPP_INTENTS opts into more, as a comma-separated preference list
-// drawn from "session" and "charge". Opting into sessions currently also
-// requires PI402_MPP_ALLOW_REFUNDLESS_SESSION=1: the protocol reclaims a
-// session's unspent deposit through an amountless return invoice minted at
-// open, and the swap-backed embedded wallet cannot mint amountless invoices
-// yet, so every session it opens forfeits whatever balance is left at close.
-// That is an acceptable cost on a test network and a deliberate one anywhere
-// else, which is exactly what an explicit opt-in encodes.
-export function mppIntents(): readonly string[] {
+// drawn from "session" and "charge".
+//
+// The session intent additionally requires a return-invoice minter. A
+// session's unspent deposit comes back through an amountless refund invoice
+// the buyer must supply at open, and the reference server refuses an open
+// without one, so a buyer with no minter would pay deposits whose opens are
+// guaranteed to be refused. The swap-backed embedded wallet cannot mint
+// amountless invoices (the daemon refuses a zero amount), so the extension
+// has no minter today and sessions stay off there; the dev harness can wire
+// one from a local lnd, which is what makes the regtest session flow
+// testable. A wavelength-side amountless receive is the upstream seam that
+// lifts this for the extension.
+export function mppIntents(options?: { hasReturnInvoiceMinter?: boolean }): readonly string[] {
 	if (paymentScheme() === "l402") {
 		return [];
 	}
@@ -104,22 +109,15 @@ export function mppIntents(): readonly string[] {
 		throw new Error("PI402_MPP_INTENTS must name at least one intent when set");
 	}
 
-	if (intents.includes("session") && !allowRefundlessSessions()) {
+	if (intents.includes("session") && !options?.hasReturnInvoiceMinter) {
 		throw new Error(
-			"PI402_MPP_INTENTS includes sessions, but the embedded wallet cannot mint the amountless " +
-				"refund invoice a session needs, so any unspent deposit is forfeited at close; set " +
-				"PI402_MPP_ALLOW_REFUNDLESS_SESSION=1 to accept that",
+			"PI402_MPP_INTENTS includes sessions, but no return-invoice minter is available: a session's " +
+				"refund needs an amountless invoice the embedded wallet cannot mint, and the server refuses " +
+				"an open without one, so the deposit would be paid for a guaranteed refusal",
 		);
 	}
 
 	return intents;
-}
-
-// allowRefundlessSessions reports whether the operator has accepted that a
-// session's unspent deposit is forfeited at close. See mppIntents for why
-// this is currently a precondition of the session intent at all.
-export function allowRefundlessSessions(): boolean {
-	return process.env.PI402_MPP_ALLOW_REFUNDLESS_SESSION === "1";
 }
 
 // utcDayKey returns a stable key for the current UTC calendar day, used to reset
