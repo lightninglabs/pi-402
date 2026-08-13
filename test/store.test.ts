@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { FileReceiptLog, FileTokenStore, type ReceiptRecord } from "../src/store.ts";
+import { FileCredentialStore, FileReceiptLog, FileTokenStore, type ReceiptRecord } from "../src/store.ts";
 
 async function tempDir(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "pi402-store-"));
@@ -264,4 +264,104 @@ test("FileTokenStore refuses to rewrite the file it could not read", skipAsRoot,
 	const fresh = new FileTokenStore(path);
 	assert.deepEqual(await fresh.get("origin-a|/v1/chat|POST"), token);
 	assert.deepEqual(await fresh.get("origin-b|/v1/chat|POST"), token);
+});
+
+test("FileCredentialStore round-trips a credential across instances", async () => {
+	const path = join(await tempDir(), "credentials.json");
+	const credential = {
+		authorization: "Payment eyJjaGFsbGVuZ2UiOnt9fQ",
+		challengeId: "chal-abc123",
+		expiresAt: "2099-01-01T00:00:00Z",
+	};
+
+	const first = new FileCredentialStore(path);
+	await first.put("http://localhost:8404|/v1/chat|POST", credential);
+
+	// A fresh instance stands in for a process restart. The point of the
+	// store is that a retry which throws after the money moved does not turn
+	// into a second payment.
+	const second = new FileCredentialStore(path);
+	assert.deepEqual(await second.get("http://localhost:8404|/v1/chat|POST"), credential);
+});
+
+test("FileCredentialStore writes the file owner-only", async () => {
+	const path = join(await tempDir(), "credentials.json");
+	const store = new FileCredentialStore(path);
+	await store.put("k", { authorization: "Payment x", challengeId: "c" });
+
+	const { mode } = await stat(path);
+	assert.equal(mode & 0o777, 0o600);
+});
+
+test("FileCredentialStore drops an expired credential", async () => {
+	const path = join(await tempDir(), "credentials.json");
+	const store = new FileCredentialStore(path);
+
+	await store.put("k", {
+		authorization: "Payment x",
+		challengeId: "c",
+		expiresAt: "2000-01-01T00:00:00Z",
+	});
+
+	assert.equal(await store.get("k"), null);
+});
+
+test("FileCredentialStore treats an unparseable expiry as expired", async () => {
+	// NaN loses every comparison, so a credential whose expiry does not parse
+	// would otherwise be immortal, the wrong failure mode for a bearer value.
+	const path = join(await tempDir(), "credentials.json");
+	const store = new FileCredentialStore(path);
+
+	await store.put("k", {
+		authorization: "Payment x",
+		challengeId: "c",
+		expiresAt: "not a date",
+	});
+
+	assert.equal(await store.get("k"), null);
+});
+
+test("FileCredentialStore deletes a credential the server refused", async () => {
+	const path = join(await tempDir(), "credentials.json");
+	const store = new FileCredentialStore(path);
+
+	await store.put("keep", { authorization: "Payment a", challengeId: "a" });
+	await store.put("drop", { authorization: "Payment b", challengeId: "b" });
+	await store.delete("drop");
+
+	assert.equal(await store.get("drop"), null);
+	assert.notEqual(await store.get("keep"), null);
+
+	// The delete must survive a restart, not just this instance's view.
+	const reopened = new FileCredentialStore(path);
+	assert.equal(await reopened.get("drop"), null);
+});
+
+test("FileCredentialStore merges rather than clobbering a concurrent write", async () => {
+	const path = join(await tempDir(), "credentials.json");
+	const mine = new FileCredentialStore(path);
+	const theirs = new FileCredentialStore(path);
+
+	await mine.put("mine", { authorization: "Payment a", challengeId: "a" });
+	await theirs.put("theirs", { authorization: "Payment b", challengeId: "b" });
+
+	assert.notEqual(await mine.get("mine"), null);
+	assert.notEqual(await mine.get("theirs"), null);
+});
+
+test("FileCredentialStore sets aside a corrupt file instead of failing", async () => {
+	const dir = await tempDir();
+	const path = join(dir, "credentials.json");
+	await writeFile(path, "{ not json", { mode: 0o600 });
+
+	const store = new FileCredentialStore(path);
+	assert.equal(await store.get("k"), null);
+
+	// A broken cache must never block a payment, and the old file is kept
+	// for postmortem rather than deleted.
+	await store.put("k", { authorization: "Payment x", challengeId: "c" });
+	assert.notEqual(await store.get("k"), null);
+
+	const entries = await readdir(dir);
+	assert.ok(entries.some((name) => name.endsWith(".corrupt")));
 });
