@@ -209,6 +209,7 @@ export class WalletService {
 			req.RecoveryWindow = WALLET_RECOVERY_WINDOW;
 		} else {
 			assertSeedIsSafeToGenerate();
+			assertNoStaleSeedFile();
 		}
 
 		const created = await call("createWallet", req);
@@ -216,7 +217,26 @@ export class WalletService {
 		// A restored wallet's seed is already in the operator's hands, so
 		// writing a second copy would add an exposure and no safety.
 		if (mnemonic.length === 0) {
-			writeSeedFile(created?.Mnemonic);
+			try {
+				writeSeedFile(created?.Mnemonic);
+			} catch (err) {
+				// The wallet now exists in the daemon's database with a seed
+				// that was never recorded, and the next start would unlock it
+				// without noticing anything wrong. Name that state exactly and
+				// say how to leave it, because the recovery is only safe at
+				// this instant: the wallet is still empty, so deleting it
+				// loses nothing, whereas once it is funded the directory is
+				// the only key to the funds.
+				const detail = err instanceof Error ? err.message : String(err);
+				throw new Error(
+					"the wallet was just created but its seed backup could " +
+						`not be written (${detail}); the new wallet has no ` +
+						"seed backup, so delete the wallet directory at " +
+						`${walletDataDir()} and start again. Deleting it is ` +
+						"only safe right now, while the wallet is still empty.",
+					{ cause: err },
+				);
+			}
 		}
 	}
 
@@ -596,6 +616,29 @@ function assertSeedIsSafeToGenerate(): void {
 			"already hold with PI402_WALLET_MNEMONIC, or set " +
 			"PI402_ALLOW_PLAINTEXT_SEED=1 to accept a plaintext seed " +
 			`file at ${join(walletDataDir(), SEED_FILE)}`,
+	);
+}
+
+// assertNoStaleSeedFile refuses to create a fresh wallet while a seed file
+// from an earlier wallet is still sitting in the data directory.
+//
+// Reaching the create path with a seed file already present means the wallet
+// database is gone but the seed of the wallet it belonged to is not. Creating
+// a new wallet anyway would be quietly destructive twice over: writeSeedFile
+// must not clobber the old words, so the new wallet's seed would have nowhere
+// to go, and the stale file would sit beside the new database masquerading as
+// its backup. Whoever restored from it later would recover the wrong wallet.
+function assertNoStaleSeedFile(): void {
+	const path = join(walletDataDir(), SEED_FILE);
+	if (!existsSync(path)) {
+		return;
+	}
+
+	throw new Error(
+		`refusing to create a new wallet: a seed file already exists at ` +
+			`${path} but the wallet it belongs to does not. To restore that ` +
+			"wallet, set PI402_WALLET_MNEMONIC to its words; to start " +
+			"fresh, move the seed file somewhere safe first.",
 	);
 }
 

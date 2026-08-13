@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { WalletService } from "../src/wallet.ts";
 
@@ -131,6 +135,104 @@ test("startAndUnlock only unlocks when a wallet already exists but is locked", a
 	} finally {
 		stub.restore();
 		delete process.env.PI402_WALLETD_GATEWAY;
+	}
+});
+
+// embeddedStub installs a fake wavewalletdkCall dispatcher, the global the
+// WASM bridge would install. loadWavewalletdk returns an existing dispatcher
+// rather than instantiating the module, so this is the seam that lets the
+// embedded bootstrap run without any WASM at all. Calls are recorded so a
+// test can assert on the route a bootstrap took.
+function embeddedStub(handlers: Record<string, (req: any) => unknown>) {
+	const calls: Array<{ method: string; req: any }> = [];
+	(globalThis as any).wavewalletdkCall = async (method: string, req?: unknown) => {
+		calls.push({ method, req });
+		const handler = handlers[method];
+		if (!handler) {
+			throw new Error(`unexpected call to ${method}`);
+		}
+		return handler(req);
+	};
+	return {
+		calls,
+		methods: () => calls.map((call) => call.method),
+		restore: () => {
+			delete (globalThis as any).wavewalletdkCall;
+		},
+	};
+}
+
+// walletDirEnv points the embedded wallet at a throwaway directory and cleans
+// the override up afterwards. Tests must never touch a real ~/.pi402/wallet.
+async function walletDirEnv(): Promise<{ dir: string; restore: () => void }> {
+	const dir = await mkdtemp(join(tmpdir(), "pi402-wallet-"));
+	process.env.PI402_WALLET_DIR = dir;
+	return {
+		dir,
+		restore: () => {
+			delete process.env.PI402_WALLET_DIR;
+		},
+	};
+}
+
+test("startAndUnlock refuses to create a wallet over a stale seed file", async () => {
+	const env = await walletDirEnv();
+	await writeFile(join(env.dir, "seed.txt"), "old words from an earlier wallet\n", { mode: 0o600 });
+
+	const stub = embeddedStub({
+		start: () => ({}),
+		unlockWallet: () => {
+			throw new Error("wallet does not exist");
+		},
+		createWallet: () => ({ Mnemonic: ["new", "words"] }),
+		status: () => ({ Ready: true }),
+	});
+
+	try {
+		// The refusal must land before createWallet: once the daemon has
+		// created a wallet, the stale file and the new database disagree
+		// about which wallet the backup belongs to.
+		await assert.rejects(() => new WalletService().startAndUnlock(), /seed file already exists/);
+		assert.ok(!stub.methods().includes("createWallet"), "must not have created a wallet over the stale seed");
+	} finally {
+		stub.restore();
+		env.restore();
+	}
+});
+
+test("a create that returns no seed words says the wallet must be deleted", async () => {
+	const env = await walletDirEnv();
+
+	const stub = embeddedStub({
+		start: () => ({}),
+		unlockWallet: () => {
+			throw new Error("wallet does not exist");
+		},
+		// The daemon created the wallet but handed back nothing to back it
+		// up with.
+		createWallet: () => ({}),
+		status: () => ({ Ready: true }),
+	});
+
+	try {
+		await assert.rejects(
+			() => new WalletService().startAndUnlock(),
+			(err: Error) => {
+				// The wallet exists in the daemon's database at this point,
+				// so the error has to say the created wallet has no backup
+				// and that deleting the wallet directory now, while it is
+				// still empty, is the recovery.
+				assert.match(err.message, /no seed backup/);
+				assert.ok(err.message.includes(env.dir), "the error must name the wallet directory to delete");
+				assert.match(err.message, /delete the wallet directory/);
+				assert.match(err.message, /still empty/);
+				return true;
+			},
+		);
+		assert.ok(!existsSync(join(env.dir, "seed.txt")), "no seed file must be left behind");
+	} finally {
+		stub.restore();
+		env.restore();
 	}
 });
 
