@@ -1,5 +1,5 @@
-import type { BuyerPolicy } from "@aperture/core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { BuyerPolicy } from "@lightninglabs/aperture-core";
 
 // DEFAULT_MAX_SAT_PER_REQUEST caps a single L402 payment when
 // PI402_MAX_SAT_PER_REQUEST is unset.

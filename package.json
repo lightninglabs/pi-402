@@ -1,5 +1,5 @@
 {
-	"name": "pi-402",
+	"name": "@lightninglabs/pi-402",
 	"version": "0.0.1",
 	"description": "Pay for Pi inference with Lightning: an L402 + walletdk extension for the Pi coding agent",
 	"type": "module",
@@ -23,8 +23,8 @@
 		"openai": "6.26.0"
 	},
 	"peerDependencies": {
-		"@aperture/client": "*",
-		"@aperture/core": "*",
+		"@lightninglabs/aperture-client": "*",
+		"@lightninglabs/aperture-core": "*",
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*"
 	},

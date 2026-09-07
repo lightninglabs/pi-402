@@ -10,7 +10,13 @@ import { randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CachedCredential, CachedToken, ClientReceipt, CredentialStore, TokenStore } from "@aperture/client";
+import type {
+	CachedCredential,
+	CachedToken,
+	ClientReceipt,
+	CredentialStore,
+	TokenStore,
+} from "@lightninglabs/aperture-client";
 
 // dataDir resolves the directory durable state lives in. The directory is
 // created lazily by the stores on first write.

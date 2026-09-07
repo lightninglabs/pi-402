@@ -1,4 +1,4 @@
-import type { InvoicePayer } from "@aperture/core";
+import type { InvoicePayer } from "@lightninglabs/aperture-core";
 import type { WalletService } from "./wallet.ts";
 
 // PayInvoiceInput is the L402 buyer loop's request to pay a challenge invoice.

@@ -1,12 +1,4 @@
 import {
-	type ClientReceipt,
-	type CredentialStore,
-	createPayingFetch,
-	TokenCache,
-	type TokenStore,
-} from "@aperture/client";
-import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
-import {
 	type Api,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
@@ -15,6 +7,14 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import {
+	type ClientReceipt,
+	type CredentialStore,
+	createPayingFetch,
+	TokenCache,
+	type TokenStore,
+} from "@lightninglabs/aperture-client";
+import type { BuyerPolicy, InvoicePayer } from "@lightninglabs/aperture-core";
 import OpenAI from "openai";
 import { mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";

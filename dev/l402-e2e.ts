@@ -3,7 +3,7 @@
 // Nothing here is a stand-in. The wallet is the embedded one, the payer is the
 // WalletInvoicePayer the extension registers, the budget policy is the same
 // one, the durable stores are the same ones, and the fetch is
-// @aperture/client's createPayingFetch. The only thing this file adds is a
+// @lightninglabs/aperture-client's createPayingFetch. The only thing this file adds is a
 // main() where Pi would otherwise be driving.
 //
 // It runs a list of scenarios in a single process, because it has to: the
@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createPayingFetch } from "@aperture/client";
+import { createPayingFetch } from "@lightninglabs/aperture-client";
 import OpenAI from "openai";
 
 import { WalletInvoicePayer } from "../src/payer.ts";

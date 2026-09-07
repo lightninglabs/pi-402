@@ -93,8 +93,8 @@ npm install
 npm run check   # biome + tsc
 ```
 
-The buyer loop reuses [`@aperture/client`](https://github.com/lightninglabs/aperture-ts)
-(`createPayingFetch`) and [`@aperture/core`](https://github.com/lightninglabs/aperture-ts)
+The buyer loop reuses [`@lightninglabs/aperture-client`](https://github.com/lightninglabs/aperture-ts)
+(`createPayingFetch`) and [`@lightninglabs/aperture-core`](https://github.com/lightninglabs/aperture-ts)
 (`InvoicePayer`, budget policies). Until those are published, link them from a
 local `aperture-ts` checkout.
 

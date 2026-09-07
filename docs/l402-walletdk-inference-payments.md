@@ -77,10 +77,10 @@ pi core stays payment-agnostic; the structure now lives within the extension:
 | Concern | Extension module | Notes |
 |---|---|---|
 | Paying transport + model | `provider.ts` — `streamSimple` w/ `new OpenAI({ baseURL: PROXY, fetch: payingFetch })` | request-scoped, stateless |
-| L402 buyer loop | `@aperture/client` `createPayingFetch({ payer, buyerPolicy, tokenCache })` | reused as-is |
+| L402 buyer loop | `@lightninglabs/aperture-client` `createPayingFetch({ payer, buyerPolicy, tokenCache })` | reused as-is |
 | Wallet lifecycle (create/unlock/**deposit=boarding addr**/balance) | `wallet.ts` — loads walletdk WASM on `session_start`, holds handle in extension state | the boarding-address/deposit flow lives here, surfaced via commands/UI, never on the inference path |
 | InvoicePayer | `payer.ts` — wraps `walletdkCall` | see §5.3 |
-| Budget/approval | `policy.ts` — `@aperture/core` policies + `ManualApprovalPolicy` via `ctx.ui` | asserted before dispatch, on quoted total |
+| Budget/approval | `policy.ts` — `@lightninglabs/aperture-core` policies + `ManualApprovalPolicy` via `ctx.ui` | asserted before dispatch, on quoted total |
 | UX (`/wallet`, `/deposit`, `/balance`, status widget) | `commands.ts` | `ctx.ui.*` |
 
 ### Does the agent core / coding-agent need to know? (your question)
@@ -171,7 +171,7 @@ boarding address; poll `confirmedBalanceSat`/`pendingInboundSat` for a status
 widget; warn when balance < policy floor.
 
 ### 5.5 Packaging
-Extension `package.json` deps: `@aperture/client`, `@aperture/core`, `openai`,
+Extension `package.json` deps: `@lightninglabs/aperture-client`, `@lightninglabs/aperture-core`, `openai`,
 and the `walletdk-wasm` blob (+ glue). Loaded via `pi -e ./l402-ext` or dropped
 in `~/.pi/agent/extensions/`. Consider vendoring the wasm to avoid a build step
 for users.

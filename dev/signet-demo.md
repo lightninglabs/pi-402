@@ -24,7 +24,7 @@ nothing needs seeding.
 
 - The first request goes out **unauthenticated**. `payingFetch` checks the
   token cache, finds nothing, and sends the request anyway
-  (`@aperture/client` `fetch/payingFetch.ts`).
+  (`@lightninglabs/aperture-client` `fetch/payingFetch.ts`).
 - Aperture answers **402 with the macaroon and the BOLT11 invoice**. That
   challenge is free: L402 hands out the invoice to anyone who asks, which is
   the whole point of the scheme.

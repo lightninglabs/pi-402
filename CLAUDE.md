@@ -20,7 +20,7 @@ Ships as a single extension — Pi core is not modified.
 - `src/wallet.ts` — `WalletService`: loads and unlocks the walletdk WASM, exposes
   balance / boarding address / `payInvoice`.
 - `src/policy.ts` — budget policy (per-request and daily ceilings) over
-  `@aperture/core`; the daily counter seeds from the receipt ledger.
+  `@lightninglabs/aperture-core`; the daily counter seeds from the receipt ledger.
 - `src/store.ts` — durable state under `PI402_DATA_DIR` (default `~/.pi402`):
   the paid-token cache and the append-only payment receipt ledger.
 - `src/commands.ts` — `/wallet`, `/deposit`, `/balance`, `/receipts` slash
@@ -30,8 +30,8 @@ Ships as a single extension — Pi core is not modified.
 
 - **Extends**: [Pi](https://pi.dev) via `@earendil-works/pi-coding-agent`
   (`ExtensionAPI.registerProvider` / `on` / `registerCommand`).
-- **Buyer loop**: [`@aperture/client`](https://github.com/lightninglabs/aperture-ts)
-  `createPayingFetch`, [`@aperture/core`](https://github.com/lightninglabs/aperture-ts)
+- **Buyer loop**: [`@lightninglabs/aperture-client`](https://github.com/lightninglabs/aperture-ts)
+  `createPayingFetch`, [`@lightninglabs/aperture-core`](https://github.com/lightninglabs/aperture-ts)
   `InvoicePayer` + policies.
 - **Wallet**: [walletdk](https://github.com/lightninglabs/darepo-client) WASM
   (`walletdkCall`).

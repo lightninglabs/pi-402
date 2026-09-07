@@ -93,7 +93,7 @@ The agent directory is overridable via `PI_CODING_AGENT_DIR`.
 
 ## Dependencies (read this during early development)
 
-pi-402's buyer loop uses `@aperture/client` and `@aperture/core` from
+pi-402's buyer loop uses `@lightninglabs/aperture-client` and `@lightninglabs/aperture-core` from
 [aperture-ts](https://github.com/lightninglabs/aperture-ts), plus the Pi
 packages (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`) as peers.
 Until the aperture packages are published to npm, link them from a local
@@ -105,7 +105,7 @@ cd aperture-ts && pnpm install && pnpm -r build
 
 # Then in pi-402, link the two packages (npm link or a workspace override):
 cd pi-402
-npm link @aperture/client @aperture/core
+npm link @lightninglabs/aperture-client @lightninglabs/aperture-core
 npm install
 ```
 
