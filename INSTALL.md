@@ -6,7 +6,7 @@ per-run flag — and pi-402 works with all three. No Pi fork or core patch is
 required.
 
 > Status: early development. Real payments work end to end on regtest via the
-> darepod sidecar backend (`PI402_WALLETD_GATEWAY`); the in-process WASM
+> `waved` sidecar backend (`PI402_WALLETD_GATEWAY`); the in-process WASM
 > backend targets browser-like hosts. `PI402_MOCK_PAYER=1` remains the
 > no-Lightning dev path against a mock proxy.
 
@@ -16,8 +16,8 @@ required.
 - An **L402 proxy URL** fronting your model (see the aperture-based Go proxy in
   the design doc). For local testing, a mock proxy plus `PI402_MOCK_PAYER=1`.
 - For real payments: a **funded walletdk wallet** and a reachable swap server.
-  On a Node host, run a darepod sidecar (built with the `walletdkrpc` tag in
-  darepo-client) and point `PI402_WALLETD_GATEWAY` at its HTTP/JSON gateway;
+  On a Node host, run a `waved` sidecar (built with the `wavewalletrpc` tag in
+  wavelength) and point `PI402_WALLETD_GATEWAY` at its HTTP/JSON gateway;
   see `dev/regtest/README.md` for the full regtest stack.
 
 ## Option 1 — `pi install` (recommended)
@@ -140,12 +140,12 @@ Wallet commands (registered by the extension):
 | `PI402_MAX_SAT_PER_REQUEST` | Per-request spend ceiling |
 | `PI402_DAILY_CAP_SAT` | Daily spend ceiling |
 | `PI402_MOCK_PAYER` | Set to `1` to use the mock payer (no real Lightning) while developing |
-| `PI402_WALLETD_GATEWAY` | Sidecar mode: darepod `walletdkrpc` HTTP/JSON gateway (e.g. `http://localhost:10031`) |
+| `PI402_WALLETD_GATEWAY` | Sidecar mode: `waved` `wavewalletrpc` HTTP/JSON gateway (e.g. `http://localhost:10031`) |
 | `PI402_WALLET_PASSWORD` | Wallet password (created on first run) |
 
 ## Verify with the mock path
 
-Before wiring a real wallet or waiting on darepo-client#835, prove the loop end
+Before wiring a real wallet or waiting on wavelength#835, prove the loop end
 to end against a mock proxy:
 
 ```bash

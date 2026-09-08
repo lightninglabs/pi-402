@@ -3,7 +3,7 @@
 ## Purpose
 
 A [Pi](https://pi.dev) extension that pays for LLM inference over L402 +
-Lightning, using an embedded [walletdk](https://github.com/lightninglabs/darepo-client)
+Lightning, using an embedded [Wavelength](https://github.com/lightninglabs/wavelength)
 wallet. It registers a paid model provider whose request path is wrapped in a
 paying `fetch`, and settles each call against an aperture-based L402 proxy.
 
@@ -33,7 +33,7 @@ Ships as a single extension — Pi core is not modified.
 - **Buyer loop**: [`@lightninglabs/aperture-client`](https://github.com/lightninglabs/aperture-ts)
   `createPayingFetch`, [`@lightninglabs/aperture-core`](https://github.com/lightninglabs/aperture-ts)
   `InvoicePayer` + policies.
-- **Wallet**: [walletdk](https://github.com/lightninglabs/darepo-client) WASM
+- **Wallet**: [Wavelength](https://github.com/lightninglabs/wavelength) WASM
   (`walletdkCall`).
 - **Seller**: an [aperture](https://github.com/lightninglabs/aperture)-based Go
   L402 proxy fronting the model (separate deployable).
@@ -50,10 +50,15 @@ Ships as a single extension — Pi core is not modified.
 
 ## Dependencies / status
 
-- Real `WalletInvoicePayer` depends on
-  [darepo-client#835](https://github.com/lightninglabs/darepo-client/issues/835)
-  (preimage on settled send entry). Until it lands, develop against
-  `MockInvoicePayer`.
+- `WalletInvoicePayer` is live. The preimage arrives on the settled send entry,
+  which [wavelength#835](https://github.com/lightninglabs/wavelength/issues/835)
+  landed on 2026-07-01. `MockInvoicePayer` (`PI402_MOCK_PAYER=1`) is still there
+  for exercising the buyer loop without spending anything.
+- MPP charge is on by default alongside L402. MPP **sessions** are implemented
+  in the SDK and proven end to end on regtest, but are off here: a session open
+  requires an amountless return invoice for the refund, and the swap-backed
+  wallet cannot mint one, so `mppIntents()` refuses the session intent rather
+  than opening a deposit that could not come back.
 
 ## Deep Docs
 

@@ -53,8 +53,7 @@ model provider backed by an embedded walletdk wallet.
 - `wallet.ts` implements both backends: the sidecar HTTP/JSON gateway
   (`PI402_WALLETD_GATEWAY`) and the embedded WASM bridge. Both run
   `prepareSend` → open settle stream → `send`/`sendPrepared` → read preimage.
-  The preimage read still depends on
-  [darepo-client#835](https://github.com/lightninglabs/darepo-client/issues/835)
-  landing the preimage on the settled entry.
-- Run with `PI402_MOCK_PAYER=1` to exercise the loop against a mock proxy before
-  the wallet is wired.
+  The preimage arrives on the settled entry as of
+  [wavelength#835](https://github.com/lightninglabs/wavelength/issues/835)
+  (closed 2026-07-01), so the real payer path is live.
+- Run with `PI402_MOCK_PAYER=1` to exercise the loop without spending sats.
