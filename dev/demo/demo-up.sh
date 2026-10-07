@@ -87,6 +87,25 @@ if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
 		say "regtest: funding the local lnd wallets"
 		( cd "$LUMOS_DIR" && ./scripts/docker-regtest-setup.sh ) >/dev/null
 	fi
+
+	# demo-fund.sh pays from lnd-server, but swapd's node is lnd-client, so
+	# every funding payment routes over a channel between the two. The setup
+	# script funds both wallets and opens nothing, and without the channel
+	# every receive hangs with no useful error. Open one on a fresh chain.
+	if [[ "$(docker exec ark-lnd-server lncli --network=regtest \
+		listchannels | grep -c '"chan_id"')" -eq 0 ]]; then
+		say "regtest: opening the lnd-server -> lnd-client channel"
+		CLIENT_PUBKEY="$(docker exec ark-lnd-client lncli --network=regtest \
+			--rpcserver=localhost:10010 getinfo \
+			| sed -n 's/.*"identity_pubkey": *"\([0-9a-f]*\)".*/\1/p')"
+		docker exec ark-lnd-server lncli --network=regtest connect \
+			"$CLIENT_PUBKEY@lnd-client:9736" >/dev/null 2>&1 || true
+		docker exec ark-lnd-server lncli --network=regtest openchannel \
+			--node_key="$CLIENT_PUBKEY" --local_amt=16000000 \
+			--push_amt=8000000 >/dev/null
+		docker exec ark-bitcoind bitcoin-cli -regtest -rpcuser=devuser \
+			-rpcpassword=devpass -generate 6 >/dev/null
+	fi
 else
 	say "signet: using the public operator, swap server and chain source"
 	echo "    nothing local to start"
@@ -104,6 +123,13 @@ run_in() {
 	sleep 1
 	tmux send-keys -t "$TMUX_SESSION:$window" "$*" C-m
 }
+
+# Nothing on regtest mines by itself, so funding transactions and boarding
+# outputs would sit unconfirmed forever and swap provisioning would stall.
+if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
+	run_in miner "while true; do docker exec ark-bitcoind bitcoin-cli -regtest \
+-rpcuser=devuser -rpcpassword=devpass -generate 1 >/dev/null; sleep 30; done"
+fi
 
 say "starting the pricer"
 tmux send-keys -t "$TMUX_SESSION:pricer" \
