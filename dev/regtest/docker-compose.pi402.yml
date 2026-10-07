@@ -97,10 +97,6 @@ services:
       - --swap.gateway.listenaddr=0.0.0.0:10032
       - --swap.gateway.allowedorigins=*
       - --swap.allowpublicunauthenticatedlistener
-      # swapd's flag still defaults to 40 blocks while its startup check, its
-      # README and its library default all moved to 288, so a stock swapd
-      # refuses to start. Pin the documented default until the flag catches up.
-      - --swap.refunddelay=288
       # An in-swap pays the receiver out of swapd's own Ark liquidity, so the
       # auto-boarder keeps lnd's on-chain funds boarded into Ark.
       - --autoboarder.enabled
