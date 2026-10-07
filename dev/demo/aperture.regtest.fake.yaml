@@ -1,0 +1,34 @@
+# Aperture for the regtest demo profile. There is no lnd here: challenge invoices
+# are minted from the seller's Wavelength wallet, and the swap server supplies
+# the inbound liquidity that backs them, so the seller needs no Lightning node,
+# no channels and no inbound capacity to get paid.
+#
+# This variant fronts dev/fake-openai-upstream.ts on 8410 instead of Baseten,
+# so the whole payment and metering path runs with no provider credential:
+#
+#   APERTURE_CONFIG=aperture.regtest.fake.yaml dev/demo/demo-up.sh regtest
+#
+# The fake streams OpenAI-shaped SSE with a usage object on the final chunk,
+# which is all aperture and the pricer read.
+listenaddr: "127.0.0.1:8404"
+insecure: true
+servestatic: false
+autocert: false
+dbbackend: "sqlite"
+sqlite:
+  databasefilename: "aperture.db"
+authenticator:
+  network: "regtest"
+  wavelengthgateway: "http://localhost:10061"
+services:
+  - name: "inference"
+    hostregexp: ".*"
+    pathregexp: "^/v1/.*"
+    address: "127.0.0.1:8410"
+    protocol: "http"
+    auth: "on"
+    dynamicprice:
+      enabled: true
+      grpcaddress: "127.0.0.1:10025"
+      insecure: true
+      metered: true

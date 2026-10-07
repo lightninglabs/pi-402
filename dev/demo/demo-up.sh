@@ -64,7 +64,11 @@ mkdir -p "$STATE" "$DEMO_DIR/bin"
 [[ -x "$WAVED_BIN" ]] || die "waved not found at $WAVED_BIN (build it with: make build tags=\"swapruntime wavewalletrpc\")"
 [[ -x "$APERTURE_BIN" ]] || die "aperture not found at $APERTURE_BIN"
 [[ -x "$LIGHTMETER_BIN" ]] || die "lightmeterd not found at $LIGHTMETER_BIN"
-[[ -n "${!BASETEN_ENV_VAR:-}" ]] || die "\$$BASETEN_ENV_VAR is not set; aperture reads the model credential from its environment"
+# Only a config that forwards to Baseten needs the credential. The fake
+# upstream profile (APERTURE_CONFIG=aperture.regtest.fake.yaml) needs none.
+if grep -q "\${$BASETEN_ENV_VAR}" "$HERE/$APERTURE_CONFIG"; then
+	[[ -n "${!BASETEN_ENV_VAR:-}" ]] || die "\$$BASETEN_ENV_VAR is not set; aperture reads the model credential from its environment"
+fi
 command -v tmux >/dev/null || die "tmux is required"
 
 # ------------------------------------------------------------- the chain ----
