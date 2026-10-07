@@ -64,7 +64,11 @@ mkdir -p "$STATE" "$DEMO_DIR/bin"
 [[ -x "$WAVED_BIN" ]] || die "waved not found at $WAVED_BIN (build it with: make build tags=\"swapruntime wavewalletrpc\")"
 [[ -x "$APERTURE_BIN" ]] || die "aperture not found at $APERTURE_BIN"
 [[ -x "$LIGHTMETER_BIN" ]] || die "lightmeterd not found at $LIGHTMETER_BIN"
-[[ -n "${!BASETEN_ENV_VAR:-}" ]] || die "\$$BASETEN_ENV_VAR is not set; aperture reads the model credential from its environment"
+# Only a config that forwards to Baseten needs the credential. The fake
+# upstream profile (APERTURE_CONFIG=aperture.regtest.fake.yaml) needs none.
+if grep -q "\${$BASETEN_ENV_VAR}" "$HERE/$APERTURE_CONFIG"; then
+	[[ -n "${!BASETEN_ENV_VAR:-}" ]] || die "\$$BASETEN_ENV_VAR is not set; aperture reads the model credential from its environment"
+fi
 command -v tmux >/dev/null || die "tmux is required"
 
 # ------------------------------------------------------------- the chain ----
@@ -73,8 +77,8 @@ if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
 	[[ -d "$LUMOS_DIR" ]] || die "lumos checkout not found at $LUMOS_DIR"
 
 	( cd "$LUMOS_DIR" && LND_SOURCE="${LND_SOURCE:-$HOME/gocode/src/github.com/lightningnetwork/lnd}" \
-		docker compose -f docker-compose.yml -f docker-compose.beefbux.yml \
-		-f docker-compose.v010.yml up -d ) >/dev/null
+		docker compose -f docker-compose.yml \
+		-f "$HERE/../regtest/docker-compose.pi402.yml" up -d ) >/dev/null
 
 	wait_for "bitcoind" 30 docker exec ark-bitcoind bitcoin-cli -regtest \
 		-rpcuser=devuser -rpcpassword=devpass getblockchaininfo
@@ -86,6 +90,25 @@ if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
 		-rpcpassword=devpass getblockcount)" -lt 110 ]]; then
 		say "regtest: funding the local lnd wallets"
 		( cd "$LUMOS_DIR" && ./scripts/docker-regtest-setup.sh ) >/dev/null
+	fi
+
+	# demo-fund.sh pays from lnd-server, but swapd's node is lnd-client, so
+	# every funding payment routes over a channel between the two. The setup
+	# script funds both wallets and opens nothing, and without the channel
+	# every receive hangs with no useful error. Open one on a fresh chain.
+	if [[ "$(docker exec ark-lnd-server lncli --network=regtest \
+		listchannels | grep -c '"chan_id"')" -eq 0 ]]; then
+		say "regtest: opening the lnd-server -> lnd-client channel"
+		CLIENT_PUBKEY="$(docker exec ark-lnd-client lncli --network=regtest \
+			--rpcserver=localhost:10010 getinfo \
+			| sed -n 's/.*"identity_pubkey": *"\([0-9a-f]*\)".*/\1/p')"
+		docker exec ark-lnd-server lncli --network=regtest connect \
+			"$CLIENT_PUBKEY@lnd-client:9736" >/dev/null 2>&1 || true
+		docker exec ark-lnd-server lncli --network=regtest openchannel \
+			--node_key="$CLIENT_PUBKEY" --local_amt=16000000 \
+			--push_amt=8000000 >/dev/null
+		docker exec ark-bitcoind bitcoin-cli -regtest -rpcuser=devuser \
+			-rpcpassword=devpass -generate 6 >/dev/null
 	fi
 else
 	say "signet: using the public operator, swap server and chain source"
@@ -104,6 +127,13 @@ run_in() {
 	sleep 1
 	tmux send-keys -t "$TMUX_SESSION:$window" "$*" C-m
 }
+
+# Nothing on regtest mines by itself, so funding transactions and boarding
+# outputs would sit unconfirmed forever and swap provisioning would stall.
+if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
+	run_in miner "while true; do docker exec ark-bitcoind bitcoin-cli -regtest \
+-rpcuser=devuser -rpcpassword=devpass -generate 1 >/dev/null; sleep 30; done"
+fi
 
 say "starting the pricer"
 tmux send-keys -t "$TMUX_SESSION:pricer" \
