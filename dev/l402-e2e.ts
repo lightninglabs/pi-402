@@ -264,18 +264,30 @@ async function main() {
 
 		// The first request pays the deposit and opens the session; the ones
 		// after it must ride the session without touching the wallet.
-		const depositSpend = await askOnce("open (pays the deposit)", "Say hi in three words.");
+		//
+		// Whether the deposit was paid is read off the receipt ledger rather
+		// than the balance. A deposit under the VTXO floor settles on the
+		// wallet's credit rail, and when it draws on credit left over from an
+		// earlier top-up the confirmed balance does not move at all.
+		const receiptsPath = join(stateDir, "receipts.ndjson");
+		const receiptCount = () =>
+			existsSync(receiptsPath) ? readFileSync(receiptsPath, "utf8").split("\n").filter(Boolean).length : 0;
+		const receiptsBefore = receiptCount();
+		await askOnce("open (pays the deposit)", "Say hi in three words.");
+		const depositsPaid = receiptCount() - receiptsBefore;
 		const bearerSpend1 = await askOnce("bearer 1 (expect 0 spend)", "Say hello in three words.");
 		const bearerSpend2 = await askOnce("bearer 2 (expect 0 spend)", "Say hey in three words.");
 
-		if (depositSpend <= 0) {
-			// Nothing was paid, so no session was opened: the requests rode
+		if (depositsPaid !== 1) {
+			// No deposit was paid, so no session was opened: the requests rode
 			// some other credential, and the bearer checks below prove nothing.
-			console.log("    \x1b[31mSESSION NOT OPENED: the first request paid no deposit\x1b[0m");
+			console.log(
+				`    \x1b[31mSESSION NOT OPENED: the first request settled ${depositsPaid} payments, want 1\x1b[0m`,
+			);
 		} else if (bearerSpend1 !== 0 || bearerSpend2 !== 0) {
 			console.log("    \x1b[31mSESSION LEAK: a bearer request touched the wallet\x1b[0m");
 		} else {
-			console.log(`    \x1b[32msession held: one deposit (${depositSpend} sat), bearers rode free\x1b[0m`);
+			console.log("    \x1b[32msession held: one deposit paid, bearers rode free\x1b[0m");
 		}
 
 		line("closing the session");
