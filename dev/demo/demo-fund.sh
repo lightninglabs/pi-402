@@ -109,7 +109,7 @@ If you specifically want to exercise the Lightning in-swap, either ask for
 less than $SPENDABLE sat or rebuild the stack for a fresh pool:
 
   cd \$LUMOS_DIR && docker compose -f docker-compose.yml \\
-    -f docker-compose.beefbux.yml -f docker-compose.v010.yml down -v
+    -f $HERE/../regtest/docker-compose.pi402.yml down -v
   $HERE/demo-up.sh regtest
 
 A rebuild resets the operator, so the wallets lose their balances and have to

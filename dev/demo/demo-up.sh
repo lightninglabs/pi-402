@@ -73,8 +73,8 @@ if [[ "$DEMO_NEEDS_DOCKER" == "yes" ]]; then
 	[[ -d "$LUMOS_DIR" ]] || die "lumos checkout not found at $LUMOS_DIR"
 
 	( cd "$LUMOS_DIR" && LND_SOURCE="${LND_SOURCE:-$HOME/gocode/src/github.com/lightningnetwork/lnd}" \
-		docker compose -f docker-compose.yml -f docker-compose.beefbux.yml \
-		-f docker-compose.v010.yml up -d ) >/dev/null
+		docker compose -f docker-compose.yml \
+		-f "$HERE/../regtest/docker-compose.pi402.yml" up -d ) >/dev/null
 
 	wait_for "bitcoind" 30 docker exec ark-bitcoind bitcoin-cli -regtest \
 		-rpcuser=devuser -rpcpassword=devpass getblockchaininfo

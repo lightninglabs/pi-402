@@ -1,0 +1,118 @@
+# Overlay for the pi-402 e2e stack, layered on the base compose file:
+#
+#   cd $LUMOS_DIR && docker compose -f docker-compose.yml \
+#     -f $PI402/dev/regtest/docker-compose.pi402.yml up -d
+#
+# demo-up.sh does exactly this for the regtest profile.
+#
+# Most of what the old v0.1.0 overlay carried has since landed upstream
+# (bitcoind's datadir mount, the operator's REST gateway on 7071, electrs on
+# 8501). What remains is the swap server, which the base file does not run,
+# and the two settings it needs from its neighbours.
+#
+# The first-party images are tagged :latest and built from lumos master and
+# swapdk-server master, which pin the same wavelength commit as their client/
+# submodule, so the whole stack runs one client version:
+#   docker build -t lumosd:latest        $LUMOS_DIR
+#   docker build -t waved:latest         $LUMOS_DIR/client
+#   docker build -t swapdk-server:latest \
+#     --secret id=github_token,env=GITHUB_TOKEN $SWAPDK_SERVER_DIR
+# lnd-server and lnd-client build from $LND_SOURCE as in the base file.
+services:
+  # Substrate holds 127.0.0.1:10009 on this host, and its loopback listener
+  # wins over Docker's wildcard publish for anything dialling localhost.
+  lnd-server:
+    ports:
+      - "10109:10009"
+      - "9735:9735"
+
+  lumosd:
+    image: lumosd:latest
+
+  # swapd's lnd holds the inbound HTLC while the Ark leg is funded, so it must
+  # run with --requireinterceptor or a dropped interceptor stream lets lnd fail
+  # a held HTLC after the Ark side has already paid.
+  lnd-client:
+    entrypoint:
+      - lnd
+      - --noseedbackup
+      - --nobootstrap
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind
+      - --bitcoind.rpcuser=devuser
+      - --bitcoind.rpcpass=devpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10010
+      - --restlisten=0.0.0.0:8081
+      - --listen=0.0.0.0:9736
+      - --tlsextradomain=lnd-client
+      - --requireinterceptor
+      - --debuglevel=${LND_DEBUG:-debug}
+
+  # swapd dials waved by its compose service name, which waved's self-signed
+  # cert does not cover, so the link runs plaintext and without macaroons.
+  waved:
+    image: waved:latest
+    command:
+      - --network=regtest
+      - --debuglevel=${WAVED_DEBUG:-debug}
+      - --wallet.type=lnd
+      - --lnd.host=lnd-client:10010
+      - --lnd.tlspath=/lnd/tls.cert
+      - --lnd.macaroonpath=/lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - --server.host=lumosd:7070
+      - --server.insecure=true
+      - --rpc.listenaddr=0.0.0.0:10029
+      - --rpc.notls
+      - --rpc.no-macaroons
+
+  # swapd turns an inbound Lightning payment into an Ark payment, so no wallet
+  # on this stack can receive over Lightning without it. Its REST gateway on
+  # 10032 is what the wasm wallet dials, since wasm has no gRPC transport.
+  swapd:
+    image: swapdk-server:latest
+    container_name: ark-swapd
+    restart: unless-stopped
+    depends_on:
+      lumosd:
+        condition: service_healthy
+      waved:
+        condition: service_started
+    command:
+      - --network=regtest
+      - --debuglevel=debug
+      - --datadir=/root/.swapd
+      - --ark.host=lumosd:7070
+      - --ark.insecure
+      - --lnd.host=lnd-client:10010
+      - --lnd.tlspath=/lnd/tls.cert
+      - --lnd.macaroonpath=/lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - --waved.host=waved:10029
+      - --waved.insecure
+      - --swap.listenaddr=0.0.0.0:10030
+      - --swap.notls
+      - --swap.gateway.enabled
+      - --swap.gateway.listenaddr=0.0.0.0:10032
+      - --swap.gateway.allowedorigins=*
+      - --swap.allowpublicunauthenticatedlistener
+      # swapd's flag still defaults to 40 blocks while its startup check, its
+      # README and its library default all moved to 288, so a stock swapd
+      # refuses to start. Pin the documented default until the flag catches up.
+      - --swap.refunddelay=288
+      # An in-swap pays the receiver out of swapd's own Ark liquidity, so the
+      # auto-boarder keeps lnd's on-chain funds boarded into Ark.
+      - --autoboarder.enabled
+      - --autoboarder.tickinterval=30s
+    ports:
+      - "127.0.0.1:10030:10030"
+      - "127.0.0.1:10032:10032"
+    volumes:
+      - lnd-client-data:/lnd:ro
+      - swapd-data:/root/.swapd
+    networks:
+      - ark-regtest
+
+volumes:
+  swapd-data:
