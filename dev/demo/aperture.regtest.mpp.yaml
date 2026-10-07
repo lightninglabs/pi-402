@@ -26,14 +26,6 @@ authenticator:
   enablempp: true
   mpprealm: "pi-402 regtest"
   enablesessions: true
-  # The pricer quotes one request at a time, so with a metered pricer a short
-  # request is priced at a sat or two and the stock 20x multiplier asks for a
-  # deposit of tens of sats. A Wavelength wallet pays anything under the
-  # ~1,000 sat VTXO floor on its credit rail, which today settles without
-  # handing back the preimage, and a session cannot open without it. Size the
-  # deposit above the floor until lightninglabs/wavelength#1392 lands, which
-  # was verified on this profile at the stock multiplier (a 20 sat deposit).
-  sessiondepositmultiplier: 2000
 services:
   - name: "inference"
     hostregexp: ".*"

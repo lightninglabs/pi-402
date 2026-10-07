@@ -15,6 +15,8 @@
 # submodule, so the whole stack runs one client version:
 #   docker build -t lumosd:latest        $LUMOS_DIR
 #   docker build -t waved:latest         $LUMOS_DIR/client
+# (or from a wavelength checkout, when a fix has landed there before the
+# lumos pin moves).
 #   docker build -t swapdk-server:latest \
 #     --secret id=github_token,env=GITHUB_TOKEN $SWAPDK_SERVER_DIR
 # lnd-server and lnd-client build from $LND_SOURCE as in the base file.
@@ -26,8 +28,44 @@ services:
       - "10109:10009"
       - "9735:9735"
 
+  # The swap server boards once on a fresh stack, and everything after that
+  # (the buyer's funding receive, every paid request) draws on what it
+  # boarded. Two operator defaults get in the way on regtest. Boarding inputs
+  # need 6 confirmations, three minutes of the miner loop, during which a
+  # board attempted early is rejected outright. And a client may hold at most
+  # 200,000 sat, enforced per VTXO and as a balance cap, so a 5M sat boarding
+  # output comes back as a 196k VTXO with the rest left on chain. The swap
+  # server is the one client that has to hold more than the general cap; a
+  # deployment whitelists its identity key, but that key is minted fresh with
+  # every regtest stack, so here the caps are lifted for everyone. lumos's own
+  # system tests run with one boarding confirmation too. lumosd requires
+  # vtxoconfirmations <= minconfs <= minboardingconfirmations, so all three
+  # drop to one together.
+  #
+  # command replaces the base file's list rather than extending it, so the
+  # base flags are repeated here.
   lumosd:
     image: lumosd:latest
+    command:
+      - --network=regtest
+      - --debuglevel=${LUMOSD_DEBUG:-debug}
+      - --lnd.host=lnd-server:10009
+      - --lnd.tlspath=/lnd/tls.cert
+      - --lnd.macaroonpath=/lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - --rpc.listen=0.0.0.0:7070
+      - --rpc.notls
+      - --rpc.no-macaroons
+      - --rpc.gateway.listen=0.0.0.0:7071
+      - --adminrpc.listen=0.0.0.0:8081
+      - --db.backend=sqlite
+      - --bitcoind.host=bitcoind:18443
+      - --bitcoind.user=devuser
+      - --bitcoind.pass=devpass
+      - --rounds.minboardingconfirmations=1
+      - --rounds.minconfs=1
+      - --rounds.vtxoconfirmations=1
+      - --rounds.maxvtxoamount=0
+      - --rounds.maxuserbalance=0
 
   # swapd's lnd holds the inbound HTLC while the Ark leg is funded, so it must
   # run with --requireinterceptor or a dropped interceptor stream lets lnd fail
