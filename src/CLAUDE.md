@@ -3,7 +3,7 @@
 ## Purpose
 
 The pi-402 extension itself: the code Pi loads to register a paid, L402-settled
-model provider backed by an embedded walletdk wallet.
+model provider backed by an embedded Wavelength wallet.
 
 ## Module Structure
 
@@ -17,7 +17,7 @@ model provider backed by an embedded walletdk wallet.
   without touching Pi core.
 - `payer.ts` — `InvoicePayer` implementations: `MockInvoicePayer` (dev) and
   `WalletInvoicePayer` (delegates to `WalletService`).
-- `wallet.ts` — `WalletService`: the embedded walletdk WASM wrapper
+- `wallet.ts` — `WalletService`: the embedded Wavelength WASM wrapper
   (`prepareSend` → `sendPrepared` → await preimage; balance; boarding address).
 - `policy.ts` — `buildBudgetPolicy`: per-request and daily spend ceilings; the
   daily counter seeds from the receipt ledger on first assertion.
@@ -25,7 +25,7 @@ model provider backed by an embedded walletdk wallet.
   `FileTokenStore` (paid L402 tokens, atomic rewrite, 0600) and
   `FileReceiptLog` (append-only NDJSON spend ledger).
 - `commands.ts` — `/wallet`, `/fund`, `/deposit`, `/balance`, `/receipts`. Two
-  funding paths: `/fund <sats>` returns a BOLT11 invoice (walletdk `receive`,
+  funding paths: `/fund <sats>` returns a BOLT11 invoice (wallet `receive`,
   settled through an inbound swap in seconds), `/deposit` returns an on-chain
   boarding address (a confirmation plus an Ark round before it is spendable).
 
@@ -52,8 +52,6 @@ model provider backed by an embedded walletdk wallet.
   input side are still unmapped.
 - `wallet.ts` implements both backends: the sidecar HTTP/JSON gateway
   (`PI402_WALLETD_GATEWAY`) and the embedded WASM bridge. Both run
-  `prepareSend` → open settle stream → `send`/`sendPrepared` → read preimage.
-  The preimage arrives on the settled entry as of
-  [wavelength#835](https://github.com/lightninglabs/wavelength/issues/835)
-  (closed 2026-07-01), so the real payer path is live.
+  `prepareSend` → open settle stream → `send`/`sendPrepared` → read preimage,
+  which arrives on the settled entry, so the real payer path is live.
 - Run with `PI402_MOCK_PAYER=1` to exercise the loop without spending sats.

@@ -16,15 +16,19 @@ Ships as a single extension — Pi core is not modified.
 - `src/provider.ts` — the paid provider's `streamSimple`: an OpenAI-compatible
   streaming translation whose HTTP client uses `payingFetch`.
 - `src/payer.ts` — `InvoicePayer` implementations: `MockInvoicePayer` (dev) and
-  `WalletInvoicePayer` (walletdk `prepareSend` → `sendPrepared` → await preimage).
-- `src/wallet.ts` — `WalletService`: loads and unlocks the walletdk WASM, exposes
-  balance / boarding address / `payInvoice`.
+  `WalletInvoicePayer` (wallet `prepareSend` → `sendPrepared` → await preimage).
+- `src/wallet.ts` — `WalletService`: loads and unlocks the embedded Wavelength wallet
+  (WASM, in-process) or drives a native `waved` sidecar, and exposes balance /
+  boarding address / invoice receive / `payInvoice`.
 - `src/policy.ts` — budget policy (per-request and daily ceilings) over
   `@lightninglabs/aperture-core`; the daily counter seeds from the receipt ledger.
 - `src/store.ts` — durable state under `PI402_DATA_DIR` (default `~/.pi402`):
   the paid-token cache and the append-only payment receipt ledger.
-- `src/commands.ts` — `/wallet`, `/deposit`, `/balance`, `/receipts` slash
-  commands.
+- `src/commands.ts` — `/wallet`, `/deposit`, `/fund`, `/balance`, `/receipts`
+  slash commands.
+- `scripts/stage-wasm.sh` — copies a built Wavelength `bin/wasm` into `./wasm`
+  (git-ignored, shipped in the npm package) and writes `wasm/package.json`
+  with `{"type":"commonjs"}`; `--verify` is the `prepublishOnly` guard.
 
 ## Relationships
 
@@ -34,7 +38,7 @@ Ships as a single extension — Pi core is not modified.
   `createPayingFetch`, [`@lightninglabs/aperture-core`](https://github.com/lightninglabs/aperture-ts)
   `InvoicePayer` + policies.
 - **Wallet**: [Wavelength](https://github.com/lightninglabs/wavelength) WASM
-  (`walletdkCall`).
+  (`wavewalletdkCall`), bundled in the npm package under `wasm/`.
 - **Seller**: an [aperture](https://github.com/lightninglabs/aperture)-based Go
   L402 proxy fronting the model (separate deployable).
 
@@ -50,10 +54,21 @@ Ships as a single extension — Pi core is not modified.
 
 ## Dependencies / status
 
-- `WalletInvoicePayer` is live. The preimage arrives on the settled send entry,
-  which [wavelength#835](https://github.com/lightninglabs/wavelength/issues/835)
-  landed on 2026-07-01. `MockInvoicePayer` (`PI402_MOCK_PAYER=1`) is still there
-  for exercising the buyer loop without spending anything.
+- `@lightninglabs/aperture-client` and `@lightninglabs/aperture-core` are real
+  `dependencies`, not peers: Pi's installer does not install peer
+  dependencies. Only the two Pi packages stay as peers. Verified against Pi
+  1.1.0.
+- The embedded wallet is the default backend on Node. Its WASM bundle lives in
+  `wasm/` and must carry its own `package.json` declaring `commonjs`, because
+  this package is `"type": "module"` and the bundle would otherwise inherit
+  that and break the SQLite worker; `assertWasmDirIsCommonJs` in `wallet.ts`
+  fails loudly if it does. `PI402_WASM_DIR` overrides the bundled copy.
+- The embedded daemon logs errors only unless `PI402_DEBUG_LEVEL` says
+  otherwise, since its output would otherwise draw over Pi's TUI.
+- There is no hosted seller. Users point `L402_PROXY_URL` at an aperture they
+  or a provider run.
+- `MockInvoicePayer` (`PI402_MOCK_PAYER=1`) exercises the buyer loop without
+  spending anything.
 - MPP charge is on by default alongside L402. MPP **sessions** are implemented
   in the SDK and proven end to end on regtest, but are off here: a session open
   requires an amountless return invoice for the refund, and the swap-backed
