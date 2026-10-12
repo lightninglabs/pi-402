@@ -570,13 +570,13 @@ function startConfigFromEnv(): Record<string, unknown> {
 		swap_server_transport: "rest",
 	};
 
-	// The embedded daemon logs through this process, so its verbosity is
-	// worth being able to raise without editing code. A stuck swap says
-	// almost nothing at info level.
-	const debugLevel = process.env.PI402_DEBUG_LEVEL;
-	if (debugLevel) {
-		config.debug_level = debugLevel;
-	}
+	// The embedded daemon logs through this process, and under Pi that means
+	// straight over the TUI, so it defaults to errors only. A stuck swap says
+	// almost nothing even at info level, so when debugging one, raise it with
+	// PI402_DEBUG_LEVEL=debug (or trace), or per subsystem as in
+	// "info,ROND=debug". Any level btclog accepts works: trace, debug, info,
+	// warn, error, critical, or off.
+	config.debug_level = process.env.PI402_DEBUG_LEVEL || "error";
 
 	const arkServer = process.env.PI402_ARK_SERVER ?? (isLocal ? "127.0.0.1:7070" : "");
 	if (arkServer) {
