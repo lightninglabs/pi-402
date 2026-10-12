@@ -252,11 +252,15 @@ them installed in the checkout.
 pi -ne              # start with no extensions, to isolate a load failure
 ```
 
-If an extension fails to load, Pi prints `Failed to load extension "<path>"`.
-Common causes:
+If the extension fails to load, Pi prints `Failed to load extension "<path>"`
+and the paid models never appear. The usual cause:
 
 - `Cannot find module '@lightninglabs/aperture-client'`: dependencies are not
   installed. Reinstall from npm, or run `npm install` in a checkout.
+
+If the extension loads but the wallet cannot start, Pi keeps running and prints
+`Extension "<path>" error: ...` at session start. The usual causes:
+
 - `wasm bundle at ... is missing ...`: the bundle is incomplete or absent. Stage
   one with `scripts/stage-wasm.sh`, or set `PI402_WASM_DIR`.
 - `wasm bundle at ... would load as ES modules`: the bundle sits inside a

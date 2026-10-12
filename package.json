@@ -29,8 +29,8 @@
 		"clean": "echo 'nothing to clean'"
 	},
 	"dependencies": {
-		"@lightninglabs/aperture-client": "^0.0.1",
-		"@lightninglabs/aperture-core": "^0.0.1",
+		"@lightninglabs/aperture-client": "~0.0.1",
+		"@lightninglabs/aperture-core": "~0.0.1",
 		"openai": "6.26.0"
 	},
 	"peerDependencies": {

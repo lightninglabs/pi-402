@@ -1068,13 +1068,15 @@ export function assertWasmDirIsCommonJs(wasmDir: string): void {
 	for (let dir = wasmDir; ; dir = dirname(dir)) {
 		const manifest = join(dir, "package.json");
 		if (existsSync(manifest)) {
+			// A manifest Node cannot parse fails the worker the same opaque
+			// way, so name it here rather than passing it through.
 			let type: unknown;
 			try {
 				type = JSON.parse(readFileSync(manifest, "utf8")).type;
-			} catch {
-				// An unreadable manifest is not evidence of the trap, and
-				// Node would reject it too.
-				return;
+			} catch (err) {
+				throw new Error(`unable to parse ${manifest}, which scopes the wasm bundle at ${wasmDir}`, {
+					cause: err,
+				});
 			}
 
 			if (type === "module") {
@@ -1082,7 +1084,7 @@ export function assertWasmDirIsCommonJs(wasmDir: string): void {
 					`wasm bundle at ${wasmDir} would load as ES modules, because ` +
 						`${manifest} declares "type": "module"; the bundle is ` +
 						'CommonJS. Add a package.json containing {"type":"commonjs"} ' +
-						"to the bundle directory, or re-run scripts/stage-wasm.sh",
+						"to the bundle directory (in a checkout, scripts/stage-wasm.sh writes it)",
 				);
 			}
 

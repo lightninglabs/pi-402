@@ -527,8 +527,11 @@ test("assertWasmDirIsCommonJs accepts a bundle with its own commonjs package.jso
 	assertWasmDirIsCommonJs(wasmDir);
 });
 
-test("assertWasmDirIsCommonJs accepts a bundle with no enclosing package", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "pi402-wasm-bare-"));
+test("assertWasmDirIsCommonJs names a scoping package.json it cannot parse", async () => {
+	const pkg = await mkdtemp(join(tmpdir(), "pi402-wasm-bad-"));
+	const wasmDir = join(pkg, "wasm");
+	await mkdir(wasmDir);
+	await writeFile(join(wasmDir, "package.json"), "{not json");
 
-	assertWasmDirIsCommonJs(dir);
+	assert.throws(() => assertWasmDirIsCommonJs(wasmDir), /unable to parse .*wasm\/package\.json/);
 });
