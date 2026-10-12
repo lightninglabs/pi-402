@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { assertSeedIsSafeToGenerate, WalletService, withFetchEnabled, writeSeedFile } from "../src/wallet.ts";
+import {
+	assertSeedIsSafeToGenerate,
+	assertWasmDirIsCommonJs,
+	WalletService,
+	withFetchEnabled,
+	writeSeedFile,
+} from "../src/wallet.ts";
 
 // A wallet that was never started has neither backend wired, so any call that
 // reaches one fails with "wallet not started". These tests lean on that: if
@@ -498,4 +504,31 @@ test("readPreimageWasm times out when the settle never arrives", async (t) => {
 
 	t.mock.timers.tick(120_000);
 	await pending;
+});
+
+// The ESM trap: a bundle inside a "type": "module" package loads its CommonJS
+// files as ES modules unless it carries a package.json of its own.
+test("assertWasmDirIsCommonJs refuses a bundle under a type:module package", async () => {
+	const pkg = await mkdtemp(join(tmpdir(), "pi402-wasm-esm-"));
+	const wasmDir = join(pkg, "wasm");
+	await mkdir(wasmDir);
+	await writeFile(join(pkg, "package.json"), JSON.stringify({ type: "module" }));
+
+	assert.throws(() => assertWasmDirIsCommonJs(wasmDir), /would load as ES modules.*stage-wasm\.sh/s);
+});
+
+test("assertWasmDirIsCommonJs accepts a bundle with its own commonjs package.json", async () => {
+	const pkg = await mkdtemp(join(tmpdir(), "pi402-wasm-cjs-"));
+	const wasmDir = join(pkg, "wasm");
+	await mkdir(wasmDir);
+	await writeFile(join(pkg, "package.json"), JSON.stringify({ type: "module" }));
+	await writeFile(join(wasmDir, "package.json"), JSON.stringify({ type: "commonjs" }));
+
+	assertWasmDirIsCommonJs(wasmDir);
+});
+
+test("assertWasmDirIsCommonJs accepts a bundle with no enclosing package", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi402-wasm-bare-"));
+
+	assertWasmDirIsCommonJs(dir);
 });

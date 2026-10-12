@@ -1,6 +1,6 @@
 import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { maxSatPerRequest } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
@@ -900,6 +900,7 @@ async function loadWavewalletdk(onExit: (err: unknown) => void): Promise<Wavewal
 	// against a bundle missing the pieces its database needs and discover it
 	// as an unexplained open failure much later.
 	requireWasmAssets(wasmDir);
+	assertWasmDirIsCommonJs(wasmDir);
 
 	// Both of these are read during instantiation, so they have to be set
 	// before it rather than after.
@@ -1049,6 +1050,49 @@ function requireWasmAssets(wasmDir: string): void {
 			"rebuild it with `make wasm-wallet` in wavelength and point " +
 			"PI402_WASM_DIR at the resulting bin/wasm",
 	);
+}
+
+// assertWasmDirIsCommonJs refuses a bundle that Node would load as ES modules.
+//
+// The bundle's .js files are CommonJS, and the SQLite worker require()s two of
+// them. Node picks the module system for a .js file from the nearest
+// package.json at or above it, and pi-402 itself declares "type": "module". A
+// bundle placed inside the package with no package.json of its own therefore
+// inherits that, and the worker's require() fails. The bridge reports it as
+// "sqlite worker initialization failed: <object>", which names nothing, so we
+// look for the cause ourselves and say what to do about it.
+// scripts/stage-wasm.sh writes the package.json that prevents this.
+//
+// Exported for tests.
+export function assertWasmDirIsCommonJs(wasmDir: string): void {
+	for (let dir = wasmDir; ; dir = dirname(dir)) {
+		const manifest = join(dir, "package.json");
+		if (existsSync(manifest)) {
+			let type: unknown;
+			try {
+				type = JSON.parse(readFileSync(manifest, "utf8")).type;
+			} catch {
+				// An unreadable manifest is not evidence of the trap, and
+				// Node would reject it too.
+				return;
+			}
+
+			if (type === "module") {
+				throw new Error(
+					`wasm bundle at ${wasmDir} would load as ES modules, because ` +
+						`${manifest} declares "type": "module"; the bundle is ` +
+						'CommonJS. Add a package.json containing {"type":"commonjs"} ' +
+						"to the bundle directory, or re-run scripts/stage-wasm.sh",
+				);
+			}
+
+			return;
+		}
+
+		if (dirname(dir) === dir) {
+			return;
+		}
+	}
 }
 
 // waitForGlobal polls for a global symbol installed by the WASM bridge.

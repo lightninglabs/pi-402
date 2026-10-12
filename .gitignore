@@ -3,6 +3,6 @@ dist/
 *.log
 .DS_Store
 .pi/
-# Vendored walletdk WASM artifacts (built out of band).
-src/wasm/walletdk.wasm
-src/wasm/wasm_exec.js
+# The embedded wallet's WASM bundle (about 137 MB). It is staged by
+# scripts/stage-wasm.sh and ships in the npm package, not in git.
+wasm/

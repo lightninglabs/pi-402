@@ -13,7 +13,16 @@
 			"./src/index.ts"
 		]
 	},
+	"files": [
+		"src",
+		"wasm",
+		"README.md",
+		"INSTALL.md",
+		"LICENSE"
+	],
 	"scripts": {
+		"stage-wasm": "scripts/stage-wasm.sh",
+		"prepublishOnly": "scripts/stage-wasm.sh --verify",
 		"check": "biome check --write --error-on-warnings . && tsc --noEmit",
 		"test": "node --test 'test/**/*.test.ts'",
 		"format": "biome format --write .",
