@@ -52,24 +52,56 @@ injects it server-side, so the buyer holds sats and the seller holds the key.
 
 ## Install
 
-The quickest path (Pi's package manager clones, installs deps, and auto-loads):
+```bash
+pi install npm:@lightninglabs/pi-402
+```
+
+Pi's package manager downloads the package and loads it on every run. The
+package carries the embedded wallet's WASM bundle, so there is nothing to build
+and no daemon to start. You need Node.js 22.19 or newer, and we have verified it
+against Pi 1.1.0. [INSTALL.md](INSTALL.md) covers the alternatives (a git
+install, an auto-discovered directory, and `pi -e` for development) and
+troubleshooting.
+
+pi-402 is the buyer half. It pays a seller, and there is no hosted seller to
+point it at yet, so you bring your own.
+
+## Bring your own seller
+
+The seller is an [aperture](https://github.com/lightninglabs/aperture) proxy in
+front of an OpenAI-compatible model endpoint, with metering turned on so a
+payment buys a bundle of tokens that is drawn down as the model serves them.
+Aperture's
+[`docs/metering.md`](https://github.com/lightninglabs/aperture/blob/master/docs/metering.md)
+explains the mechanism, and [lightmeter](https://github.com/lightninglabs/lightmeter)
+is the controller that prices the bundles. Run your own, or use one a provider
+runs, and point pi-402 at it:
 
 ```bash
-pi install git:github.com/lightninglabs/pi-402
+export L402_PROXY_URL="https://your-aperture.example/v1"   # include the /v1
+export PI402_NETWORK=signet                                 # defaults to regtest
+export PI402_MAX_SAT_PER_REQUEST=20000                      # above the bundle price
 ```
 
-See [INSTALL.md](INSTALL.md) for all install methods (managed package,
-auto-discovered directory, per-run `-e` flag), dependency linking during
-development, and the mock-payer verification path.
+The per-request ceiling defaults to 1000 sats and is checked against the quoted
+total outflow, so raise it above whatever your seller's bundle costs or the
+budget policy will decline the payment. `dev/regtest/README.md` and
+`dev/signet-demo.md` bring up a complete seller and buyer on one machine, which
+is the way to try pi-402 end to end.
 
-Then select a paid model and prompt:
+## Use
+
+Select a paid model and prompt:
 
 ```
-/model l402-baseten/kimi-k3          # 1M context, natively multimodal
-/model l402-baseten/glm-4.7          # 200K context
-/model l402-baseten/glm-5.2          # 200K context
+/model l402-baseten/kimi-k3           # 1M context, natively multimodal
+/model l402-baseten/glm-4.7           # 200K context
+/model l402-baseten/glm-5.2           # 200K context
 /model l402-baseten/deepseek-v4-flash # 1M context, the cheap one
 ```
+
+These are the models the extension registers. What a given seller actually serves
+is up to the seller.
 
 Wallet commands:
 
@@ -77,7 +109,7 @@ Wallet commands:
 /wallet        show wallet status and balance
 /fund <sats>   show a Lightning invoice to fund the wallet (settles in seconds)
 /deposit       show an on-chain boarding address to fund the wallet
-/balance       show confirmed / pending balance
+/balance       show confirmed balance
 /receipts      show the payment ledger: count, all-time and today's sats
 ```
 
@@ -89,44 +121,65 @@ channels to open, no inbound liquidity to source, and nothing to keep online.
 Whatever you fund is the ceiling on what the agent can ever spend, which is a
 more comfortable thing to hand an autonomous process than a card.
 
+## The wallet
+
+The wallet runs inside the Pi process as WASM, shipped in the package. On the
+first session it creates itself under `~/.pi402/wallet` and writes its seed
+words to `seed.txt` there. Back that file up: it is the only copy.
+
+On mainnet we are stricter, because the funds are real. `PI402_WALLET_PASSWORD`
+must be set to a secret of your own, and a new wallet will not write a plaintext
+seed unless you either restore words you already hold with
+`PI402_WALLET_MNEMONIC` or accept the plaintext file with
+`PI402_ALLOW_PLAINTEXT_SEED=1`.
+
+Two overrides exist. `PI402_WASM_DIR` points at a different WASM bundle than the
+bundled one, for example a fresh build from Wavelength. `PI402_WALLETD_GATEWAY`
+points at a native `waved` that is already running, and pi-402 then drives that
+daemon and loads no WASM.
+
 ## Configuration
 
-| Env var | Description |
-|---------|-------------|
-| `L402_PROXY_URL` | Base URL of the L402 proxy fronting the model, including the API prefix (e.g. `http://localhost:8404/v1`) |
-| `PI402_MAX_SAT_PER_REQUEST` | Per-request spend ceiling (budget policy) |
-| `PI402_DAILY_CAP_SAT` | Daily spend ceiling |
-| `PI402_PAYMENT_SCHEME` | `auto` (default: take a Payment offer when the seller makes one, else L402) or `l402` to force the L402 door |
-| `PI402_MPP_INTENTS` | Comma-separated Payment intents to accept. Defaults to `charge`. Sessions need a return-invoice minter, which the swap-backed wallet cannot supply yet, so asking for `session` here throws. |
-| `PI402_MOCK_PAYER` | Set to `1` for the mock payer (no Lightning; dev only) |
-
-### Wallet backends
-
-The embedded wallet runs against one of two Wavelength wallet backends:
-
-| Env var | Description |
-|---------|-------------|
-| `PI402_WALLETD_GATEWAY` | **Sidecar mode**: HTTP/JSON gateway of a native `waved` built with the `wavewalletrpc` tag (e.g. `http://localhost:10031`). This is the path for Node hosts, where the WASM's OPFS-backed SQLite is unavailable. |
-| `PI402_WASM_DIR` | **Embedded WASM mode** (browser-like hosts): directory with the `make wasm-wallet` artifacts (`wavewalletdk.wasm`, `wasm_exec.js`, sqlite bridge) |
-| `PI402_WALLET_PASSWORD` | Wallet password (created on first run) |
-| `PI402_NETWORK` | `regtest` (default), `testnet`, `mainnet` |
-| `PI402_ARK_SERVER` | Ark operator address (WASM mode) |
-| `PI402_SWAP_SERVER` | Swap server address (WASM mode) |
-| `PI402_ESPLORA_URL` | Esplora API for the embedded wallet (WASM mode) |
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `L402_PROXY_URL` | `http://localhost:8402` | Base URL of the L402 proxy fronting the model, including the API prefix (for aperture, `/v1`) |
+| `PI402_MAX_SAT_PER_REQUEST` | `1000` | Per-request spend ceiling, checked on the quoted total outflow |
+| `PI402_DAILY_CAP_SAT` | `100000` | Daily spend ceiling, seeded from the receipt ledger on restart |
+| `PI402_PAYMENT_SCHEME` | `auto` | `auto` takes a Payment offer when the seller makes one, else L402; `l402` forces the L402 door |
+| `PI402_MPP_INTENTS` | `charge` | Comma-separated Payment intents to accept. Sessions need a return-invoice minter, which the swap-backed wallet cannot supply yet, so asking for `session` here throws. |
+| `PI402_NETWORK` | `regtest` | Network the wallet runs on, for example `signet` or `mainnet` |
+| `PI402_WALLET_PASSWORD` | dev default | Wallet password; mainnet refuses the default |
+| `PI402_WALLET_MNEMONIC` | unset | Seed words to restore on first run instead of generating a wallet |
+| `PI402_ALLOW_PLAINTEXT_SEED` | unset | `1` lets a new mainnet wallet write a plaintext `seed.txt` |
+| `PI402_WALLET_DIR` | `$PI402_DATA_DIR/wallet` | Wallet databases and `seed.txt` |
+| `PI402_DATA_DIR` | `~/.pi402` | Token cache, credential cache, receipt ledger, and the wallet |
+| `PI402_WASM_DIR` | `<package>/wasm` | WASM bundle directory, overriding the bundled copy |
+| `PI402_WALLETD_GATEWAY` | unset | Use a native `waved` at this HTTP/JSON gateway (e.g. `http://localhost:10031`) instead of the embedded wallet |
+| `PI402_ARK_SERVER` | regtest only | Ark operator address; other networks resolve it by name |
+| `PI402_SWAP_SERVER` | regtest only | Swap server address; other networks resolve it by name |
+| `PI402_ESPLORA_URL` | regtest only | Esplora API; other networks resolve it by name |
+| `PI402_SERVER_INSECURE` | `1` on regtest, else `0` | Plaintext transport to the operator and swap server |
+| `PI402_DEBUG_LEVEL` | `error` | Embedded daemon log level. Quiet by default so it stays off the TUI; raise it (`debug`, or `info,ROND=debug`) when a swap sticks |
+| `PI402_MOCK_PAYER` | unset | `1` uses the mock payer (no Lightning; dev only) |
 
 ## Development
 
 This repo is also the dev environment for the extension.
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 npm run check   # biome + tsc
+npm test
 ```
 
 The buyer loop reuses [`@lightninglabs/aperture-client`](https://github.com/lightninglabs/aperture-ts)
 (`createPayingFetch`) and [`@lightninglabs/aperture-core`](https://github.com/lightninglabs/aperture-ts)
-(`InvoicePayer`, budget policies). Until those are published, link them from a
-local `aperture-ts` checkout.
+(`InvoicePayer`, budget policies), both from npm. INSTALL.md has a note on linking
+a local aperture-ts checkout instead.
+
+The WASM bundle is not in git. To work on the embedded wallet, build it with
+`make wasm-wallet` in Wavelength and run `scripts/stage-wasm.sh <path-to-bin/wasm>`.
+`npm publish` refuses to run unless that staged bundle is complete.
 
 ## Docs
 

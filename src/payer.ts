@@ -9,8 +9,8 @@ interface PayInvoiceInput {
 }
 
 // MockInvoicePayer returns a fixed preimage without paying anything. It exists
-// so the buyer loop can be exercised end to end before the real walletdk payer
-// (which depends on darepo-client#835) is available.
+// so the buyer loop can be exercised end to end with no wallet and no
+// Lightning at all.
 export class MockInvoicePayer implements InvoicePayer {
 	async payInvoice(input: PayInvoiceInput): Promise<{ preimageHex: string; amountPaidSat: number }> {
 		return { preimageHex: "00".repeat(32), amountPaidSat: input.amountSat };

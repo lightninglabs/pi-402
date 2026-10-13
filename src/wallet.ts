@@ -1,6 +1,6 @@
 import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { maxSatPerRequest } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
@@ -570,13 +570,13 @@ function startConfigFromEnv(): Record<string, unknown> {
 		swap_server_transport: "rest",
 	};
 
-	// The embedded daemon logs through this process, so its verbosity is
-	// worth being able to raise without editing code. A stuck swap says
-	// almost nothing at info level.
-	const debugLevel = process.env.PI402_DEBUG_LEVEL;
-	if (debugLevel) {
-		config.debug_level = debugLevel;
-	}
+	// The embedded daemon logs through this process, and under Pi that means
+	// straight over the TUI, so it defaults to errors only. A stuck swap says
+	// almost nothing even at info level, so when debugging one, raise it with
+	// PI402_DEBUG_LEVEL=debug (or trace), or per subsystem as in
+	// "info,ROND=debug". Any level btclog accepts works: trace, debug, info,
+	// warn, error, critical, or off.
+	config.debug_level = process.env.PI402_DEBUG_LEVEL || "error";
 
 	const arkServer = process.env.PI402_ARK_SERVER ?? (isLocal ? "127.0.0.1:7070" : "");
 	if (arkServer) {
@@ -900,6 +900,7 @@ async function loadWavewalletdk(onExit: (err: unknown) => void): Promise<Wavewal
 	// against a bundle missing the pieces its database needs and discover it
 	// as an unexplained open failure much later.
 	requireWasmAssets(wasmDir);
+	assertWasmDirIsCommonJs(wasmDir);
 
 	// Both of these are read during instantiation, so they have to be set
 	// before it rather than after.
@@ -1049,6 +1050,51 @@ function requireWasmAssets(wasmDir: string): void {
 			"rebuild it with `make wasm-wallet` in wavelength and point " +
 			"PI402_WASM_DIR at the resulting bin/wasm",
 	);
+}
+
+// assertWasmDirIsCommonJs refuses a bundle that Node would load as ES modules.
+//
+// The bundle's .js files are CommonJS, and the SQLite worker require()s two of
+// them. Node picks the module system for a .js file from the nearest
+// package.json at or above it, and pi-402 itself declares "type": "module". A
+// bundle placed inside the package with no package.json of its own therefore
+// inherits that, and the worker's require() fails. The bridge reports it as
+// "sqlite worker initialization failed: <object>", which names nothing, so we
+// look for the cause ourselves and say what to do about it.
+// scripts/stage-wasm.sh writes the package.json that prevents this.
+//
+// Exported for tests.
+export function assertWasmDirIsCommonJs(wasmDir: string): void {
+	for (let dir = wasmDir; ; dir = dirname(dir)) {
+		const manifest = join(dir, "package.json");
+		if (existsSync(manifest)) {
+			// A manifest Node cannot parse fails the worker the same opaque
+			// way, so name it here rather than passing it through.
+			let type: unknown;
+			try {
+				type = JSON.parse(readFileSync(manifest, "utf8")).type;
+			} catch (err) {
+				throw new Error(`unable to parse ${manifest}, which scopes the wasm bundle at ${wasmDir}`, {
+					cause: err,
+				});
+			}
+
+			if (type === "module") {
+				throw new Error(
+					`wasm bundle at ${wasmDir} would load as ES modules, because ` +
+						`${manifest} declares "type": "module"; the bundle is ` +
+						'CommonJS. Add a package.json containing {"type":"commonjs"} ' +
+						"to the bundle directory (in a checkout, scripts/stage-wasm.sh writes it)",
+				);
+			}
+
+			return;
+		}
+
+		if (dirname(dir) === dir) {
+			return;
+		}
+	}
 }
 
 // waitForGlobal polls for a global symbol installed by the WASM bridge.
