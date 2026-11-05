@@ -2,7 +2,7 @@ import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { formatSat } from "./format.ts";
-import { maxSatPerRequest, maxSatPerSend } from "./policy.ts";
+import { maxSatPerRequest, maxSatPerSend, perPaymentLimitMessage } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
 // WalletService runs against one of two wavewalletdk backends:
@@ -298,7 +298,7 @@ export class WalletService {
 	// plus the swap fee the wallet will actually pay. We refuse before
 	// dispatching send if that total exceeds the per-request ceiling.
 	async payInvoice(invoice: string, _amountSat: number): Promise<PayResult> {
-		return this.payWithCeiling(invoice, maxSatPerRequest(), "per-request");
+		return this.payWithCeiling(invoice, maxSatPerRequest(), "PI402_MAX_SAT_PER_REQUEST");
 	}
 
 	// sendInvoice pays a BOLT11 invoice on a person's behalf, for the /send
@@ -307,15 +307,16 @@ export class WalletService {
 	// total outflow before anything is dispatched. A confirm that resolves false
 	// stops the payment with a SendDeclinedError and nothing is spent.
 	async sendInvoice(invoice: string, confirm: (outflowSat: number) => Promise<boolean>): Promise<PayResult> {
-		return this.payWithCeiling(invoice, maxSatPerSend(), "per-send", confirm);
+		return this.payWithCeiling(invoice, maxSatPerSend(), "PI402_MAX_SAT_PER_SEND", confirm);
 	}
 
 	// payWithCeiling is the shared two-phase send behind payInvoice and
-	// sendInvoice. ceilingName only labels the refusal message.
+	// sendInvoice. ceilingEnv names the setting that raises the ceiling, for the
+	// refusal message.
 	private async payWithCeiling(
 		invoice: string,
 		ceiling: number,
-		ceilingName: string,
+		ceilingEnv: string,
 		confirm?: (outflowSat: number) => Promise<boolean>,
 	): Promise<PayResult> {
 		if (this.gateway) {
@@ -325,7 +326,7 @@ export class WalletService {
 				max_credit_topup_sat: ceiling,
 			});
 			const outflow = quotedOutflowSat(quote);
-			assertWithinCeiling(outflow, ceiling, ceilingName);
+			assertWithinCeiling(outflow, ceiling, ceilingEnv);
 			assertCanAfford(fundsFrom(await this.rest("/v1/wallet/balance", {})), outflow);
 			if (confirm && !(await confirm(outflow))) {
 				throw new SendDeclinedError();
@@ -356,7 +357,7 @@ export class WalletService {
 			MaxCreditTopupSat: ceiling,
 		});
 		const outflow = quotedOutflowSat(quote);
-		assertWithinCeiling(outflow, ceiling, ceilingName);
+		assertWithinCeiling(outflow, ceiling, ceilingEnv);
 		assertCanAfford(fundsFrom(await call("balance")), outflow);
 		if (confirm && !(await confirm(outflow))) {
 			throw new SendDeclinedError();
@@ -848,12 +849,12 @@ function quotedOutflowSat(quote: any): number {
 // assertWithinCeiling refuses a quoted outflow that exceeds the per-request
 // spend ceiling. This honors the documented invariant that the budget is
 // asserted on the quoted total outflow, not the invoice face value.
-function assertWithinCeiling(outflowSat: number, ceilingSat: number, name = "per-request"): void {
+function assertWithinCeiling(outflowSat: number, ceilingSat: number, envName = "PI402_MAX_SAT_PER_REQUEST"): void {
 	if (!Number.isFinite(outflowSat) || outflowSat <= 0) {
 		throw new Error(`prepare-send returned an unusable quote (outflow ${outflowSat} sat)`);
 	}
 	if (outflowSat > ceilingSat) {
-		throw new Error(`quoted outflow ${outflowSat} sat exceeds ${name} cap ${ceilingSat} sat`);
+		throw new Error(perPaymentLimitMessage(outflowSat, ceilingSat, true, envName));
 	}
 }
 

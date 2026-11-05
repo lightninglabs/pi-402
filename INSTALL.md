@@ -273,4 +273,5 @@ If the extension loads but the wallet cannot start, Pi keeps running and prints
   `"type": "module"` package without a `package.json` of its own. Re-run
   `scripts/stage-wasm.sh`, or add a `package.json` containing
   `{"type":"commonjs"}` to the bundle directory.
-- A payment declined with a budget error: raise `PI402_MAX_SAT_PER_REQUEST`.
+- A payment declined with "out of budget": the message names the limit it hit,
+  `PI402_MAX_SAT_PER_REQUEST` or `PI402_DAILY_CAP_SAT`. Raise it and restart Pi.

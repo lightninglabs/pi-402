@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { BuyerPolicy } from "@lightninglabs/aperture-core";
+import { formatSat } from "./format.ts";
 
 // DEFAULT_MAX_SAT_PER_REQUEST caps a single L402 payment when
 // PI402_MAX_SAT_PER_REQUEST is unset.
@@ -187,7 +188,7 @@ export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTod
 			}
 
 			if (ctx.amountSat > perRequestCap) {
-				throw new Error(`payment ${ctx.amountSat} sat exceeds per-request cap ${perRequestCap} sat`);
+				throw new Error(perPaymentLimitMessage(ctx.amountSat, perRequestCap));
 			}
 
 			// The in-memory counter carries in-flight amounts the ledger
@@ -205,7 +206,7 @@ export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTod
 			// ledger.
 			const effectiveSpent = Math.max(spentToday, ledgerToday);
 			if (effectiveSpent + ctx.amountSat > dailyCapSat) {
-				throw new Error(`payment would exceed daily cap ${dailyCapSat} sat`);
+				throw new Error(dailyLimitMessage(ctx.amountSat, effectiveSpent, dailyCapSat));
 			}
 
 			// NOTE: the counter is incremented here, before the wallet actually
@@ -217,4 +218,37 @@ export function buildBudgetPolicy(_pi: ExtensionAPI, spentTodaySource?: SpentTod
 			spentToday = effectiveSpent + ctx.amountSat;
 		},
 	};
+}
+
+// OUT_OF_BUDGET opens every limit refusal. Pi never retries "out of budget";
+// without it, an amount such as "9,500" reads to Pi as an HTTP 500 and the
+// refusal is retried.
+const OUT_OF_BUDGET = "pi-402: out of budget:";
+
+// perPaymentLimitMessage explains a payment above the per-payment limit.
+// withFees marks an amount that includes the swap fee.
+export function perPaymentLimitMessage(
+	amountSat: number,
+	capSat: number,
+	withFees = false,
+	envName = "PI402_MAX_SAT_PER_REQUEST",
+): string {
+	const payment = withFees ? "this payment, with fees," : "this payment";
+	return (
+		`${OUT_OF_BUDGET} ${payment} is ${formatSat(amountSat)} sat, over the ${formatSat(capSat)} sat ` +
+		`per-payment limit (${envName}). Raise it and restart Pi to allow it.`
+	);
+}
+
+// dailyLimitMessage explains a payment that would take today's spend past the
+// daily limit. The counted amount includes payments that later failed.
+export function dailyLimitMessage(amountSat: number, countedSat: number, capSat: number): string {
+	const limit = `${formatSat(capSat)} sat daily limit (PI402_DAILY_CAP_SAT)`;
+	if (amountSat > capSat) {
+		return `${OUT_OF_BUDGET} this payment is ${formatSat(amountSat)} sat, more than the whole ${limit}. Raise it and restart Pi to allow it.`;
+	}
+	return (
+		`${OUT_OF_BUDGET} this payment is ${formatSat(amountSat)} sat and ${formatSat(countedSat)} sat is already ` +
+		`counted against today, over the ${limit}. It resets at 00:00 UTC, or raise it and restart Pi.`
+	);
 }

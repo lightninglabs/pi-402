@@ -647,7 +647,7 @@ test("payInvoice asks for credit caps equal to the per-request ceiling", async (
 			return { SendIntentID: "i", PaymentHash: "h", AmountSat: 3000, FeeSat: 1 };
 		};
 
-		await assert.rejects(() => wallet.payInvoice("lnbc1invoice", 20), /exceeds per-request cap 2500/);
+		await assert.rejects(() => wallet.payInvoice("lnbc1invoice", 20), /over the 2,500 sat per-payment limit/);
 		assert.equal(seen.length, 1);
 		assert.equal(seen[0].Invoice, "lnbc1invoice");
 		assert.equal(seen[0].MaxCreditSat, 2500);
@@ -694,7 +694,7 @@ test("sendInvoice refuses a quote over the per-send cap before asking to confirm
 					asked = true;
 					return true;
 				}),
-			/exceeds per-send cap 500/,
+			/over the 500 sat per-payment limit \(PI402_MAX_SAT_PER_SEND\)/,
 		);
 		assert.equal(asked, false);
 		assert.deepEqual(calls, ["prepareSend"]);

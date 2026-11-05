@@ -379,10 +379,10 @@ flowchart TD
     B -->|"ok"| C["roll spentToday if UTC day changed"]
     B2 --> C
     C --> D{"amountSat > perRequestCap?"}
-    D -->|"yes"| X["throw: exceeds per-request cap"]
+    D -->|"yes"| X["throw: out of budget, per-payment limit"]
     D -->|"no"| E["effectiveSpent = max(spentToday, ledgerToday)"]
     E --> F{"effectiveSpent + amountSat > dailyCapSat?"}
-    F -->|"yes"| Y["throw: would exceed daily cap"]
+    F -->|"yes"| Y["throw: out of budget, daily limit"]
     F -->|"no"| G["spentToday = effectiveSpent + amountSat"]
 ```
 
