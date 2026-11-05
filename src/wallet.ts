@@ -1,7 +1,7 @@
 import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { maxSatPerRequest } from "./policy.ts";
+import { maxSatPerRequest, perPaymentLimitMessage } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
 // WalletService runs against one of two wavewalletdk backends:
@@ -826,7 +826,7 @@ function assertWithinCeiling(outflowSat: number, ceilingSat: number): void {
 		throw new Error(`prepare-send returned an unusable quote (outflow ${outflowSat} sat)`);
 	}
 	if (outflowSat > ceilingSat) {
-		throw new Error(`quoted outflow ${outflowSat} sat exceeds per-request cap ${ceilingSat} sat`);
+		throw new Error(perPaymentLimitMessage(outflowSat, ceilingSat, true));
 	}
 }
 
