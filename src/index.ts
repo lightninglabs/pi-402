@@ -116,6 +116,17 @@ export default function (pi: ExtensionAPI): void {
 				contextWindow: 1_048_576,
 				maxTokens: 32_768,
 			},
+			{
+				// Maps to moonshotai/Kimi-K3.1-Pro on the wire. 1M-token
+				// context, priced below Kimi K3 upstream.
+				id: "kimi-k3.1-pro",
+				name: "Kimi K3.1 Pro (L402)",
+				input: ["text"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 32_768,
+			},
 		],
 		streamSimple: makeStreamSimple({ payer, policy, tokenStore, credentialStore, receiptLog }),
 	});

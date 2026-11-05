@@ -95,6 +95,7 @@ Select a paid model and prompt:
 
 ```
 /model l402-baseten/kimi-k3           # 1M context, natively multimodal
+/model l402-baseten/kimi-k3.1-pro     # 1M context, cheaper than K3 upstream
 /model l402-baseten/glm-4.7           # 200K context
 /model l402-baseten/glm-5.2           # 200K context
 /model l402-baseten/deepseek-v4-flash # 1M context, the cheap one

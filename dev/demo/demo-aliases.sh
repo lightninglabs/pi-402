@@ -30,7 +30,7 @@ export DEMO_STATE DEMO_HERE DEMO_PROFILE
 challenge() {
 	curl -si --max-time 30 "http://$APERTURE_ADDR/v1/chat/completions" \
 		-H 'Content-Type: application/json' \
-		-d '{"model":"moonshotai/Kimi-K3","messages":[{"role":"user","content":"hi"}]}' \
+		-d '{"model":"moonshotai/Kimi-K3.1-Pro","messages":[{"role":"user","content":"hi"}]}' \
 		| sed -n '1p;/^[Ww]ww-[Aa]uthenticate: L402/p'
 }
 
