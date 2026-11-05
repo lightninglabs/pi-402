@@ -165,7 +165,7 @@ Inside Pi:
 /deposit        an on-chain boarding address
 /balance        confirmed and pending balance
 /send <invoice> pay a Lightning invoice from the wallet, after you confirm
-/wallet         wallet status, and the balance in the status line
+/wallet         network, spendable, arriving and outgoing sats, and a next step
 /receipts       every payment made: count, all-time sats, and today's sats
 ```
 
