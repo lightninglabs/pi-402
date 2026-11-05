@@ -580,7 +580,12 @@ function installFakeBridge(shutdown: () => Promise<unknown>) {
 		},
 	};
 
-	return { state, restore: () => (g.sqliteBridge = saved) };
+	return {
+		state,
+		restore: () => {
+			g.sqliteBridge = saved;
+		},
+	};
 }
 
 test("stop halts the runtime and the sqlite worker exactly once, however often it is called", async () => {
