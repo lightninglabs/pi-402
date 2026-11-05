@@ -6,7 +6,7 @@
 # written to disk.
 listenaddr: "127.0.0.1:10125"
 dbpath: "lightmeter.signet.db"
-defaultmodel: "moonshotai/Kimi-K3"
+defaultmodel: "moonshotai/Kimi-K3.1-Pro"
 bundletokens: 1000000
 refreshinterval: 15m
 models:
@@ -29,6 +29,13 @@ models:
   "moonshotai/Kimi-K3":
     inputusdpermtok: 3.00
     outputusdpermtok: 15.00
+  # Kimi K3.1 Pro: 1M context. A 1M-token bundle quotes at 8,000 sats at the
+  # pinned rate below: the margin lifts the rates to 2.5 and 12.5 msat/token,
+  # which round up to 3 and 13, and the bundle is priced at the blended
+  # average, ceil(1_000_000 * (3 + 13) / 2 / 1000).
+  "moonshotai/Kimi-K3.1-Pro":
+    inputusdpermtok: 2.00
+    outputusdpermtok: 10.00
 pricing:
   marginpercent: 25
   btcusd:

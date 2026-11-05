@@ -218,7 +218,7 @@ wait_for "aperture" 30 curl -s --max-time 5 -o /dev/null "http://$APERTURE_ADDR/
 say "sanity check: a 402 with no credential and no prior payment"
 CHALLENGE="$(curl -si --max-time 30 "http://$APERTURE_ADDR/v1/chat/completions" \
 	-H 'Content-Type: application/json' \
-	-d '{"model":"moonshotai/Kimi-K3","messages":[{"role":"user","content":"hi"}]}' || true)"
+	-d '{"model":"moonshotai/Kimi-K3.1-Pro","messages":[{"role":"user","content":"hi"}]}' || true)"
 
 if grep -qi '402 Payment Required' <<<"$CHALLENGE"; then
 	echo "    402 received, invoice minted from the seller wallet"

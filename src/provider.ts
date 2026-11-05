@@ -57,6 +57,7 @@ const BASETEN_MODEL_SLUGS: Record<string, string> = {
 	"glm-5": "zai-org/GLM-5",
 	"glm-5.2": "zai-org/GLM-5.2",
 	"kimi-k3": "moonshotai/Kimi-K3",
+	"kimi-k3.1-pro": "moonshotai/Kimi-K3.1-Pro",
 };
 
 // wireModelId resolves the model id sent to the proxy/upstream.
