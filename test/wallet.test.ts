@@ -4,9 +4,12 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import {
+	assertCanAfford,
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
+	fundsFrom,
 	WalletService,
 	withFetchEnabled,
 	writeSeedFile,
@@ -240,6 +243,96 @@ test("a create that returns no seed words says the wallet must be deleted", asyn
 		stub.restore();
 		env.restore();
 	}
+});
+
+// gatewayPayStub answers a prepare-send quoting 800 sat and a balance with the
+// given body; any later call (the settle stream, the send) is unexpected.
+function gatewayPayStub(balance: unknown) {
+	return gatewayStub({
+		"/v1/wallet/prepare-send": () => ({
+			status: 200,
+			body: { send_intent_id: "intent", payment_hash: "ab", expected_total_outflow_sat: "800" },
+		}),
+		"/v1/wallet/balance": () => ({ status: 200, body: balance }),
+	});
+}
+
+async function payViaGateway(balance: unknown): Promise<{ error: unknown; calls: string[] }> {
+	const stub = gatewayPayStub(balance);
+	process.env.PI402_MAX_SAT_PER_REQUEST = "1000";
+	const wallet = new WalletService();
+	(wallet as any).gateway = "http://localhost:10041";
+	try {
+		await wallet.payInvoice("lnbc800n1fake", 800);
+		return { error: undefined, calls: stub.calls };
+	} catch (error) {
+		return { error, calls: stub.calls };
+	} finally {
+		stub.restore();
+		delete process.env.PI402_MAX_SAT_PER_REQUEST;
+	}
+}
+
+test("payInvoice refuses an unaffordable payment before dispatching it", async () => {
+	for (const balance of [{ confirmed_sat: "0", credit_available_sat: "500" }, {}]) {
+		const { error, calls } = await payViaGateway(balance);
+		assert.match(String(error), /available balance is 0 sat, but this payment needs 800 sat/);
+		assert.deepEqual(calls, ["/v1/wallet/prepare-send", "/v1/wallet/balance"]);
+	}
+});
+
+test("payInvoice dispatches an affordable payment", async () => {
+	// Reaching the settle stream, which this stub does not serve, shows the
+	// check let the payment through.
+	const { error } = await payViaGateway({ confirmed_sat: "800" });
+	assert.match(String(error), /unexpected call to \/v1\/wallet\/subscribe/);
+});
+
+test("payInvoice checks the balance on the WASM bridge too", async () => {
+	const verbs: string[] = [];
+	const wallet = new WalletService();
+	(wallet as any).call = async (verb: string) => {
+		verbs.push(verb);
+		if (verb === "prepareSend") {
+			return { SendIntentID: "intent", PaymentHash: "ab", ExpectedTotalOutflowSat: 800 };
+		}
+		if (verb === "balance") {
+			return { ConfirmedSat: 100, PendingInSat: 50_000 };
+		}
+		throw new Error(`unexpected call to ${verb}`);
+	};
+	process.env.PI402_MAX_SAT_PER_REQUEST = "1000";
+	try {
+		await assert.rejects(() => wallet.payInvoice("lnbc800n1fake", 800), /50,000 sat is still arriving/);
+		assert.deepEqual(verbs, ["prepareSend", "balance"]);
+	} finally {
+		delete process.env.PI402_MAX_SAT_PER_REQUEST;
+	}
+});
+
+test("assertCanAfford refuses a shortfall with an error Pi does not retry", () => {
+	assert.doesNotThrow(() => assertCanAfford({ confirmedSat: 8_000, arrivingSat: 0 }, 8_000));
+
+	for (const arrivingSat of [0, 50_000]) {
+		let thrown: unknown;
+		try {
+			assertCanAfford({ confirmedSat: 0, arrivingSat }, 8_000);
+		} catch (error) {
+			thrown = error;
+		}
+		assert.ok(thrown instanceof Error);
+		assert.match(thrown.message, /available balance is 0 sat, but this payment needs 8,000 sat/);
+		assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: thrown.message } as any), false);
+	}
+});
+
+test("fundsFrom reads confirmed and arriving sats in either casing, not credit", () => {
+	assert.deepEqual(fundsFrom({ confirmed_sat: "49745", pending_in_sat: "50000", credit_available_sat: "5" }), {
+		confirmedSat: 49_745,
+		arrivingSat: 50_000,
+	});
+	assert.deepEqual(fundsFrom({ ConfirmedSat: 100, CreditAvailableSat: 20 }), { confirmedSat: 100, arrivingSat: 0 });
+	assert.deepEqual(fundsFrom({ confirmed_sat: "-5" }), { confirmedSat: 0, arrivingSat: 0 });
 });
 
 test("startAndUnlock leaves an already-unlocked wallet alone", async () => {

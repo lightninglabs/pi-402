@@ -1,6 +1,7 @@
 import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { formatSat } from "./format.ts";
 import { maxSatPerRequest } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
@@ -307,6 +308,7 @@ export class WalletService {
 			});
 			const outflow = quotedOutflowSat(quote);
 			assertWithinCeiling(outflow, ceiling);
+			assertCanAfford(fundsFrom(await this.rest("/v1/wallet/balance", {})), outflow);
 
 			// Open the settle stream BEFORE dispatching the send. Subscribing
 			// after send relies on include_existing to replay the settle, and a
@@ -334,6 +336,7 @@ export class WalletService {
 		});
 		const outflow = quotedOutflowSat(quote);
 		assertWithinCeiling(outflow, ceiling);
+		assertCanAfford(fundsFrom(await call("balance")), outflow);
 
 		// Same ordering as the sidecar path: subscribe before sendPrepared so a
 		// fast settle cannot be missed.
@@ -354,7 +357,7 @@ export class WalletService {
 	async confirmedBalanceSat(): Promise<number> {
 		if (this.gateway) {
 			const res = await this.rest("/v1/wallet/balance", {});
-			return Number(res.confirmed_sat);
+			return Number(res.confirmed_sat ?? 0);
 		}
 		return this.requireCall()("confirmedBalanceSat");
 	}
@@ -828,6 +831,37 @@ function assertWithinCeiling(outflowSat: number, ceilingSat: number): void {
 	if (outflowSat > ceilingSat) {
 		throw new Error(`quoted outflow ${outflowSat} sat exceeds per-request cap ${ceilingSat} sat`);
 	}
+}
+
+// fundsFrom reads the confirmed balance and the sats still arriving from a
+// balance response in either casing. Credit is left out: the quoted outflow
+// already includes any credit top-up, and both are paid from confirmed funds.
+export function fundsFrom(balance: any): { confirmedSat: number; arrivingSat: number } {
+	const sat = (pascal: string, snake: string): number => {
+		const value = Number(balance?.[pascal] ?? balance?.[snake] ?? 0);
+		return Number.isFinite(value) && value > 0 ? value : 0;
+	};
+	return {
+		confirmedSat: sat("ConfirmedSat", "confirmed_sat"),
+		arrivingSat: sat("PendingInSat", "pending_in_sat"),
+	};
+}
+
+// assertCanAfford refuses a payment the wallet cannot cover before it is
+// dispatched. Sent anyway, it fails inside the swap and surfaces only as a
+// preimage timeout, which Pi retries. "available balance" is a phrase Pi
+// never retries.
+export function assertCanAfford(funds: { confirmedSat: number; arrivingSat: number }, outflowSat: number): void {
+	if (funds.confirmedSat >= outflowSat) {
+		return;
+	}
+	const next =
+		funds.arrivingSat > 0
+			? `${formatSat(funds.arrivingSat)} sat is still arriving; send the prompt again once it lands, or run /fund <sats>.`
+			: "Run /fund <sats> to add funds, then send the prompt again.";
+	throw new Error(
+		`pi-402: the wallet's available balance is ${formatSat(funds.confirmedSat)} sat, but this payment needs ${formatSat(outflowSat)} sat. ${next}`,
+	);
 }
 
 // NdjsonFramer reassembles newline-delimited JSON lines from a stream of text
