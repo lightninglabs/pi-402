@@ -104,6 +104,9 @@ export class WalletService {
 	// any more, so calls have to fail fast rather than hang against it.
 	private runtimeExited = false;
 
+	// stopped records that stop() has run, so a second call does nothing.
+	private stopped = false;
+
 	// startAndUnlock brings up the selected backend and unlocks the wallet,
 	// creating it on the first run. It is bootstrapped once per session from
 	// the session_start hook.
@@ -516,6 +519,57 @@ export class WalletService {
 			throw err;
 		}
 		return payload;
+	}
+
+	// stop shuts the embedded wallet down so the process can exit. The Go
+	// runtime parks on a channel and the SQLite bridge owns a worker thread;
+	// a worker thread is a live handle, so until both are released Node never
+	// drains its event loop and a non-interactive `pi -p` hangs after the
+	// reply is printed.
+	//
+	// It is idempotent, a no-op when the embedded runtime never started (mock
+	// mode, sidecar mode, or a failed bootstrap), and never throws: it runs on
+	// Pi's shutdown path, where an error would only mask the exit. Each step
+	// is bounded by timeoutMs so a wedged wallet cannot hang the exit it is
+	// meant to enable.
+	async stop(timeoutMs = 5_000): Promise<void> {
+		const call = this.call;
+		if (!call || this.stopped) {
+			return;
+		}
+		this.stopped = true;
+
+		// Once stopping begins nothing may use the wallet again.
+		this.ready = false;
+
+		const bounded = async (what: string, work: () => Promise<unknown>) => {
+			let timer: NodeJS.Timeout | undefined;
+			try {
+				await Promise.race([
+					work(),
+					new Promise((_, reject) => {
+						timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+					}),
+				]);
+			} catch (err) {
+				console.error(`[pi-402] embedded wallet ${what} failed:`, err);
+			} finally {
+				clearTimeout(timer);
+			}
+		};
+
+		// If the runtime already died on its own there is nothing to stop,
+		// but the worker thread may still be holding the process open.
+		if (!this.runtimeExited) {
+			await bounded("stop", () => call("stop"));
+		}
+
+		// The bridge's shutdown terminates the SQLite worker. It runs even
+		// when stop failed, since a leaked worker is what blocks the exit.
+		const bridge = (globalThis as any).sqliteBridge;
+		if (typeof bridge?.shutdown === "function") {
+			await bounded("sqlite shutdown", () => bridge.shutdown());
+		}
 	}
 
 	// noteRuntimeExit records that the embedded Go runtime is gone. The
