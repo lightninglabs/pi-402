@@ -41,7 +41,8 @@ model provider backed by an embedded Wavelength wallet.
   touch either file.
 - The budget policy runs before any wallet action, and the wallet re-asserts the
   per-request ceiling on the *quoted total outflow* (invoice principal plus swap
-  fee) after `prepareSend`, before dispatching `send`/`sendPrepared`.
+  fee) after `prepareSend`, before dispatching `send`/`sendPrepared`. It also
+  refuses an outflow above the confirmed balance (`assertCanAfford`).
 
 ## Status / TODO
 
