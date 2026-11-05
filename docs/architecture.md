@@ -421,7 +421,9 @@ flowchart TD
     B --> C["quotedOutflowSat(quote)"]
     C --> D{"outflow > maxSatPerRequest()?"}
     D -->|"yes"| X["assertWithinCeiling throws, nothing sent"]
-    D -->|"no"| E["subscribe, IncludeExisting true"]
+    D -->|"no"| K{"outflow > confirmed balance?"}
+    K -->|"yes"| X2["assertCanAfford throws, nothing sent"]
+    K -->|"no"| E["subscribe, IncludeExisting true"]
     E --> F["sendPrepared(SendIntentID)"]
     F --> G["readPreimageWasm or readPreimageRest"]
     G -->|"entry for PaymentHash has Preimage"| H["return preimageHex, amountPaidSat = outflow"]
@@ -440,6 +442,8 @@ flowchart TD
 2. **Check.** `assertWithinCeiling` compares the quoted total outflow to
    `maxSatPerRequest()`. This is the check that sees the fee and the invoice's
    encoded amount; the policy earlier saw only the seller's stated amount.
+   `assertCanAfford` then refuses an outflow above the confirmed balance, so
+   an underfunded wallet fails at once instead of timing out in the swap.
 3. **Subscribe first.** The activity stream is opened before `sendPrepared`.
    Subscribing afterwards would depend on `IncludeExisting` replaying a settle,
    and a missed settle would surface as a timeout.
