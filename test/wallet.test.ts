@@ -566,3 +566,85 @@ test("payInvoice asks for credit caps equal to the per-request ceiling", async (
 		}
 	}
 });
+
+// installFakeBridge swaps globalThis.sqliteBridge for one that counts its
+// shutdown calls, and returns the counter plus a restore function.
+function installFakeBridge(shutdown: () => Promise<unknown>) {
+	const g = globalThis as any;
+	const saved = g.sqliteBridge;
+	const state = { shutdowns: 0 };
+	g.sqliteBridge = {
+		shutdown: async () => {
+			state.shutdowns++;
+			return shutdown();
+		},
+	};
+
+	return { state, restore: () => (g.sqliteBridge = saved) };
+}
+
+test("stop halts the runtime and the sqlite worker exactly once, however often it is called", async () => {
+	const wallet = new WalletService();
+	const methods: string[] = [];
+	(wallet as any).call = async (method: string) => {
+		methods.push(method);
+	};
+	const bridge = installFakeBridge(async () => ({ ok: true }));
+
+	try {
+		await wallet.stop();
+		await wallet.stop();
+		assert.deepEqual(methods, ["stop"]);
+		assert.equal(bridge.state.shutdowns, 1);
+		// A stopped wallet is no longer ready for use.
+		assert.equal((wallet as any).ready, false);
+	} finally {
+		bridge.restore();
+	}
+});
+
+test("stop is a no-op when the wallet never started", async () => {
+	const wallet = new WalletService();
+	const bridge = installFakeBridge(async () => ({ ok: true }));
+
+	try {
+		await wallet.stop();
+		assert.equal(bridge.state.shutdowns, 0);
+	} finally {
+		bridge.restore();
+	}
+});
+
+test("stop swallows a runtime error and still terminates the sqlite worker", async () => {
+	const wallet = new WalletService();
+	(wallet as any).call = async () => {
+		throw new Error("stop blew up");
+	};
+	const bridge = installFakeBridge(async () => ({ ok: true }));
+
+	const realError = console.error;
+	console.error = () => {};
+	try {
+		await wallet.stop();
+		assert.equal(bridge.state.shutdowns, 1);
+	} finally {
+		console.error = realError;
+		bridge.restore();
+	}
+});
+
+test("stop gives up on a wedged runtime instead of hanging the exit", async () => {
+	const wallet = new WalletService();
+	(wallet as any).call = () => new Promise(() => {});
+	const bridge = installFakeBridge(async () => ({ ok: true }));
+
+	const realError = console.error;
+	console.error = () => {};
+	try {
+		await wallet.stop(20);
+		assert.equal(bridge.state.shutdowns, 1);
+	} finally {
+		console.error = realError;
+		bridge.restore();
+	}
+});

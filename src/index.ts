@@ -47,6 +47,13 @@ export default function (pi: ExtensionAPI): void {
 		pi.on("session_start", async () => {
 			await wallet.startAndUnlock();
 		});
+
+		// Release the wallet when Pi tears the extension down. Without this
+		// the WASM runtime and its SQLite worker thread keep Node's event
+		// loop alive, and a non-interactive `pi -p` never exits.
+		pi.on("session_shutdown", async () => {
+			await wallet.stop();
+		});
 	}
 
 	// Register the paid model provider. Its streamSimple owns the request path,
