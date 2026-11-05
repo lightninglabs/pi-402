@@ -1,6 +1,7 @@
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
+import { formatSat } from "./format.ts";
 import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
 import { makeStreamSimple } from "./provider.ts";
@@ -23,10 +24,35 @@ export default function (pi: ExtensionAPI): void {
 	// The wallet holds the embedded walletdk instance for the whole session.
 	const wallet = new WalletService();
 
+	// The footer status shows the wallet balance, and a one-line notice marks
+	// each payment, so an agent that spends on its own never does it silently.
+	// The UI handle arrives with session_start; it is a convenience only, so a
+	// failure here (no UI, a stale session, a balance read that errors) is
+	// swallowed and never reaches a payment.
+	let ui: ExtensionUIContext | undefined;
+	const showBalance = async (paidSat?: number): Promise<void> => {
+		const target = ui;
+		if (!target) {
+			return;
+		}
+
+		try {
+			const balance = await wallet.confirmedBalanceSat();
+			target.setStatus("pi-402", `⚡ ${formatSat(balance)} sat`);
+			if (paidSat !== undefined) {
+				target.notify(`pi-402 paid ${formatSat(paidSat)} sat (${formatSat(balance)} sat left)`, "info");
+			}
+		} catch {
+			// Leave the last status in place.
+		}
+	};
+
 	// The mock payer exercises the buyer loop end to end against a mock proxy
 	// with no Lightning at all; the real payer settles through walletdk.
 	const mockMode = process.env.PI402_MOCK_PAYER === "1";
-	const payer = mockMode ? new MockInvoicePayer() : new WalletInvoicePayer(wallet);
+	const payer = mockMode
+		? new MockInvoicePayer()
+		: new WalletInvoicePayer(wallet, ({ amountPaidSat }) => showBalance(amountPaidSat));
 
 	// Durable state: paid tokens and the receipt ledger live under the data
 	// dir, so a paid bundle survives a restart instead of being re-purchased
@@ -44,8 +70,10 @@ export default function (pi: ExtensionAPI): void {
 	// Bootstrap the wallet once per session. In mock mode there is no wallet
 	// to load, so the session starts without touching the WASM at all.
 	if (!mockMode) {
-		pi.on("session_start", async () => {
+		pi.on("session_start", async (_event, ctx) => {
 			await wallet.startAndUnlock();
+			ui = ctx.ui;
+			await showBalance();
 		});
 
 		// Release the wallet when Pi tears the extension down. Without this
