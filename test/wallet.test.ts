@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
+	parseWalletStatus,
 	WalletService,
 	withFetchEnabled,
 	writeSeedFile,
@@ -240,6 +241,76 @@ test("a create that returns no seed words says the wallet must be deleted", asyn
 		stub.restore();
 		env.restore();
 	}
+});
+
+test("status reads the gateway's live status response", async () => {
+	// A live signet waved response.
+	const stub = gatewayStub({
+		"/v1/wallet/status": () => ({
+			status: 200,
+			body: {
+				ready: true,
+				unlocked: true,
+				network: "signet",
+				balance: {
+					confirmed_sat: "49745",
+					pending_in_sat: "50000",
+					pending_out_sat: "0",
+					credit_available_sat: "0",
+					credit_reserved_sat: "0",
+				},
+				pending_count: 0,
+			},
+		}),
+	});
+
+	process.env.PI402_WALLETD_GATEWAY = "http://localhost:10041";
+	try {
+		const wallet = new WalletService();
+		// Skip the bootstrap.
+		(wallet as any).gateway = process.env.PI402_WALLETD_GATEWAY;
+		assert.deepEqual(await wallet.status(), {
+			ready: true,
+			network: "signet",
+			spendableSat: 49_745,
+			arrivingSat: 50_000,
+			outgoingSat: 0,
+			creditSat: 0,
+		});
+		assert.deepEqual(stub.calls, ["/v1/wallet/status"]);
+	} finally {
+		stub.restore();
+		delete process.env.PI402_WALLETD_GATEWAY;
+	}
+});
+
+test("parseWalletStatus reads the WASM bridge's PascalCase response", () => {
+	const status = parseWalletStatus({
+		Ready: false,
+		Network: "regtest",
+		Balance: { ConfirmedSat: 1_000, PendingInSat: 0, PendingOutSat: 300, CreditAvailableSat: 5 },
+	});
+	assert.deepEqual(status, {
+		ready: false,
+		network: "regtest",
+		spendableSat: 1_000,
+		arrivingSat: 0,
+		outgoingSat: 300,
+		creditSat: 5,
+	});
+});
+
+test("parseWalletStatus defaults missing fields and shows garbage amounts as zero", () => {
+	assert.deepEqual(parseWalletStatus({}), {
+		ready: true,
+		network: "",
+		spendableSat: 0,
+		arrivingSat: 0,
+		outgoingSat: 0,
+		creditSat: 0,
+	});
+	assert.equal(parseWalletStatus({ balance: { confirmed_sat: "nope" } }).spendableSat, 0);
+	assert.equal(parseWalletStatus({ balance: { confirmed_sat: "-5" } }).spendableSat, 0);
 });
 
 test("startAndUnlock leaves an already-unlocked wallet alone", async () => {

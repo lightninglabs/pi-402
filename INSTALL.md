@@ -164,7 +164,7 @@ Inside Pi:
 /fund 50000     a Lightning invoice; pay it from the Wavelength app
 /deposit        an on-chain boarding address
 /balance        confirmed and pending balance
-/wallet         wallet status, and the balance in the status line
+/wallet         network, spendable, arriving and outgoing sats, and a next step
 /receipts       every payment made: count, all-time sats, and today's sats
 ```
 

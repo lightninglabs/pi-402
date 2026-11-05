@@ -107,7 +107,7 @@ is up to the seller.
 Wallet commands:
 
 ```
-/wallet        show wallet status and balance
+/wallet        show the network and spendable, arriving and outgoing sats
 /fund <sats>   show a Lightning invoice to fund the wallet (settles in seconds)
 /deposit       show an on-chain boarding address to fund the wallet
 /balance       show confirmed balance

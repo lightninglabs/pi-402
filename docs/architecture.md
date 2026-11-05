@@ -88,7 +88,7 @@ receipt ledger, the stream translation).
 | `WalletService` (`wallet.ts`) | The backend choice (embedded or sidecar), the `ready` and `runtimeExited` flags, wallet creation and unlock, seed backup file, the quote-then-send sequence, the preimage wait. | Keys, swaps, and the Ark and Lightning protocols: those are Wavelength. |
 | `FileTokenStore`, `FileCredentialStore` (`store.ts`) | `tokens.json` and `credentials.json`: contents, permissions, merge-on-write, quarantine of corrupt files. | Cache keys and expiry values: the buyer loop chooses them. |
 | `FileReceiptLog` (`store.ts`) | `receipts.ndjson`: append, tolerant read, the UTC day sum. | What a receipt contains: `ClientReceipt` comes from the buyer loop; the extension adds `model`. |
-| `registerWalletCommands`, `registerReceiptCommands` (`commands.ts`) | The `/wallet`, `/deposit`, `/fund`, `/balance` and `/receipts` handlers and `parseFundAmount`. | Any state. Handlers call into `WalletService` and `FileReceiptLog`. |
+| `registerWalletCommands`, `registerReceiptCommands` (`commands.ts`) | The `/wallet`, `/deposit`, `/fund`, `/balance` and `/receipts` handlers, `formatWalletStatus` and `parseFundAmount`. | Any state. Handlers call into `WalletService` and `FileReceiptLog`. |
 
 ### What the extension does not own
 
@@ -536,7 +536,7 @@ band from inference, and the agent never sees their output.
 
 | Command | Handler calls | Output |
 | --- | --- | --- |
-| `/wallet` | `WalletService.confirmedBalanceSat` | Status line `pi-402` and a notification with the balance. |
+| `/wallet` | `WalletService.status` | Status line `pi-402` with the spendable balance, and a notification with the network, spendable, arriving and outgoing sats, plus a hint when the wallet is still syncing, empty, or has a deposit arriving. |
 | `/balance` | `WalletService.confirmedBalanceSat` | A notification with the balance. |
 | `/deposit` | `WalletService.depositAddress` | An on-chain boarding address. |
 | `/fund <sats>` | `parseFundAmount`, `WalletService.receiveInvoice` | A Lightning invoice. Rejects a missing or non-positive whole number; strips `_` and `,`. |

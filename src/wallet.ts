@@ -74,6 +74,37 @@ export interface PayResult {
 	amountPaidSat: number;
 }
 
+// WalletStatus is what /wallet shows. arrivingSat counts on-chain deposits
+// only, since the daemon fills pending_in from boarding outputs.
+export interface WalletStatus {
+	ready: boolean;
+	network: string;
+	spendableSat: number;
+	arrivingSat: number;
+	outgoingSat: number;
+	creditSat: number;
+}
+
+// parseWalletStatus reads either backend's status: PascalCase numbers from
+// the WASM bridge, snake_case strings from the gateway. A missing ready flag
+// counts as ready.
+export function parseWalletStatus(raw: any): WalletStatus {
+	const balance = raw?.Balance ?? raw?.balance ?? {};
+	const sat = (pascal: string, snake: string): number => {
+		// A negative or unparseable amount shows as zero.
+		const value = Number(balance[pascal] ?? balance[snake] ?? 0);
+		return Number.isFinite(value) && value > 0 ? value : 0;
+	};
+	return {
+		ready: (raw?.Ready ?? raw?.ready ?? true) !== false,
+		network: String(raw?.Network ?? raw?.network ?? ""),
+		spendableSat: sat("ConfirmedSat", "confirmed_sat"),
+		arrivingSat: sat("PendingInSat", "pending_in_sat"),
+		outgoingSat: sat("PendingOutSat", "pending_out_sat"),
+		creditSat: sat("CreditAvailableSat", "credit_available_sat"),
+	};
+}
+
 // PREIMAGE_TIMEOUT_MS bounds how long a send may take to settle before the
 // payer gives up. Ark↔Lightning swaps take seconds; minutes means stuck.
 const PREIMAGE_TIMEOUT_MS = 120_000;
@@ -357,6 +388,14 @@ export class WalletService {
 			return Number(res.confirmed_sat);
 		}
 		return this.requireCall()("confirmedBalanceSat");
+	}
+
+	// status returns the wallet's readiness, network and balance.
+	async status(): Promise<WalletStatus> {
+		if (this.gateway) {
+			return parseWalletStatus(await this.rest("/v1/wallet/status", {}));
+		}
+		return parseWalletStatus(await this.requireCall()("status"));
 	}
 
 	// depositAddress returns an on-chain boarding address to fund the wallet.

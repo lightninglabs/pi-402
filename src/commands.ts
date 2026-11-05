@@ -1,17 +1,18 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { formatSat } from "./format.ts";
 import { type FileReceiptLog, receiptPaidSat } from "./store.ts";
-import type { WalletService } from "./wallet.ts";
+import type { WalletService, WalletStatus } from "./wallet.ts";
 
 // registerWalletCommands wires the /wallet, /deposit, and /balance slash
 // commands. They surface the wallet's funding state to the user, out of band
 // from the inference path — the agent core never sees a boarding address.
 export function registerWalletCommands(pi: ExtensionAPI, wallet: WalletService): void {
 	pi.registerCommand("wallet", {
-		description: "Show the pi-402 wallet status and balance",
+		description: "Show the pi-402 wallet: network, spendable, arriving and outgoing sats",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			const balance = await wallet.confirmedBalanceSat();
-			ctx.ui.setStatus("pi-402", `⚡ ${balance} sat`);
-			ctx.ui.notify(`pi-402 wallet: ${balance} sat confirmed`, "info");
+			const status = await wallet.status();
+			ctx.ui.setStatus("pi-402", `⚡ ${formatSat(status.spendableSat)} sat`);
+			ctx.ui.notify(formatWalletStatus(status), "info");
 		},
 	});
 
@@ -48,6 +49,38 @@ export function registerWalletCommands(pi: ExtensionAPI, wallet: WalletService):
 			ctx.ui.notify(`Confirmed balance: ${balance} sat`, "info");
 		},
 	});
+}
+
+// formatWalletStatus renders the /wallet report, ending with a next step when
+// the wallet is syncing, empty, or has a deposit arriving.
+export function formatWalletStatus(status: WalletStatus): string {
+	const network = status.network ? ` (${status.network})` : "";
+	const lines = [`pi-402 wallet${network}`, `  spendable  ${formatSat(status.spendableSat)} sat`];
+	if (status.arrivingSat > 0) {
+		lines.push(`  arriving   ${formatSat(status.arrivingSat)} sat`);
+	}
+	if (status.outgoingSat > 0) {
+		lines.push(`  outgoing   ${formatSat(status.outgoingSat)} sat`);
+	}
+	if (status.creditSat > 0) {
+		lines.push(`  credit     ${formatSat(status.creditSat)} sat`);
+	}
+
+	// A wallet that is not ready can read zero for money it has.
+	if (!status.ready) {
+		lines.push(
+			"",
+			"The wallet is still starting up or syncing, so these numbers may be low. Run /wallet again in a moment.",
+		);
+	} else if (status.arrivingSat > 0) {
+		lines.push("", "Deposit on the way: spendable once it confirms and joins the next Ark round (about 30 min).");
+	} else if (status.spendableSat === 0 && status.creditSat === 0) {
+		lines.push(
+			"",
+			"The wallet is empty. Run /fund <sats> to pay in over Lightning (seconds), or /deposit for an on-chain address (a confirmation plus an Ark round).",
+		);
+	}
+	return lines.join("\n");
 }
 
 // parseFundAmount reads the sat amount off a /fund invocation, returning null
