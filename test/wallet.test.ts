@@ -535,3 +535,34 @@ test("assertWasmDirIsCommonJs names a scoping package.json it cannot parse", asy
 
 	assert.throws(() => assertWasmDirIsCommonJs(wasmDir), /unable to parse .*wasm\/package\.json/);
 });
+
+// A small payment is only allowed onto the credit rail when the caller sets
+// explicit caps, so prepareSend must carry both, bounded by the per-request
+// ceiling. Without them the wallet refuses anything under ~1,000 sat.
+test("payInvoice asks for credit caps equal to the per-request ceiling", async () => {
+	const saved = process.env.PI402_MAX_SAT_PER_REQUEST;
+	process.env.PI402_MAX_SAT_PER_REQUEST = "2500";
+
+	try {
+		const wallet = new WalletService();
+		const seen: Record<string, any>[] = [];
+		(wallet as any).call = async (method: string, args: Record<string, any>) => {
+			assert.equal(method, "prepareSend");
+			seen.push(args);
+			// Over the ceiling, so payInvoice stops after the quote.
+			return { SendIntentID: "i", PaymentHash: "h", AmountSat: 3000, FeeSat: 1 };
+		};
+
+		await assert.rejects(() => wallet.payInvoice("lnbc1invoice", 20), /exceeds per-request cap 2500/);
+		assert.equal(seen.length, 1);
+		assert.equal(seen[0].Invoice, "lnbc1invoice");
+		assert.equal(seen[0].MaxCreditSat, 2500);
+		assert.equal(seen[0].MaxCreditTopupSat, 2500);
+	} finally {
+		if (saved === undefined) {
+			delete process.env.PI402_MAX_SAT_PER_REQUEST;
+		} else {
+			process.env.PI402_MAX_SAT_PER_REQUEST = saved;
+		}
+	}
+});

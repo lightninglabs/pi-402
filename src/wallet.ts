@@ -274,6 +274,14 @@ export class WalletService {
 		}
 	}
 
+	// Credit caps: small payments (under about 1,000 sat) go over the swap
+	// server's credit rail, and the wallet only authorizes that rail when the
+	// caller sets an explicit cap. With no cap the quote is refused ("below
+	// the 1000 sat minimum for pay swaps"), which is how a 20 sat session
+	// deposit fails. We pass the per-request ceiling for both caps, so the
+	// wallet never reserves or tops up more credit than a single request may
+	// spend.
+	//
 	// payInvoice pays a BOLT11 invoice via a two-phase wavewalletdk send.
 	// prepareSend quotes the payment (including the swap fee), send
 	// dispatches it, and the preimage is read from the settled entry once
@@ -289,7 +297,11 @@ export class WalletService {
 		const ceiling = maxSatPerRequest();
 
 		if (this.gateway) {
-			const quote = await this.rest("/v1/wallet/prepare-send", { invoice });
+			const quote = await this.rest("/v1/wallet/prepare-send", {
+				invoice,
+				max_credit_sat: ceiling,
+				max_credit_topup_sat: ceiling,
+			});
 			const outflow = quotedOutflowSat(quote);
 			assertWithinCeiling(outflow, ceiling);
 
@@ -312,7 +324,11 @@ export class WalletService {
 		}
 
 		const call = this.requireCall();
-		const quote = await call("prepareSend", { Invoice: invoice });
+		const quote = await call("prepareSend", {
+			Invoice: invoice,
+			MaxCreditSat: ceiling,
+			MaxCreditTopupSat: ceiling,
+		});
 		const outflow = quotedOutflowSat(quote);
 		assertWithinCeiling(outflow, ceiling);
 
