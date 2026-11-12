@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
+import { refreshWhileEmpty } from "./footer.ts";
 import { formatSat } from "./format.ts";
 import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
@@ -30,10 +31,10 @@ export default function (pi: ExtensionAPI): void {
 	// failure here (no UI, a stale session, a balance read that errors) is
 	// swallowed and never reaches a payment.
 	let ui: ExtensionUIContext | undefined;
-	const showBalance = async (paidSat?: number): Promise<void> => {
+	const showBalance = async (paidSat?: number): Promise<number | undefined> => {
 		const target = ui;
 		if (!target) {
-			return;
+			return undefined;
 		}
 
 		try {
@@ -42,8 +43,10 @@ export default function (pi: ExtensionAPI): void {
 			if (paidSat !== undefined) {
 				target.notify(`pi-402 paid ${formatSat(paidSat)} sat (${formatSat(balance)} sat left)`, "info");
 			}
+			return balance;
 		} catch {
 			// Leave the last status in place.
+			return undefined;
 		}
 	};
 
@@ -52,7 +55,9 @@ export default function (pi: ExtensionAPI): void {
 	const mockMode = process.env.PI402_MOCK_PAYER === "1";
 	const payer = mockMode
 		? new MockInvoicePayer()
-		: new WalletInvoicePayer(wallet, ({ amountPaidSat }) => showBalance(amountPaidSat));
+		: new WalletInvoicePayer(wallet, async ({ amountPaidSat }) => {
+				await showBalance(amountPaidSat);
+			});
 
 	// Durable state: paid tokens and the receipt ledger live under the data
 	// dir, so a paid bundle survives a restart instead of being re-purchased
@@ -73,7 +78,18 @@ export default function (pi: ExtensionAPI): void {
 		pi.on("session_start", async (_event, ctx) => {
 			await wallet.startAndUnlock();
 			ui = ctx.ui;
-			await showBalance();
+			const balance = await showBalance();
+
+			// The wallet reports ready before its first sync completes, so a
+			// zero here may be a read that beat the sync. Keep refreshing the
+			// footer for a bounded time rather than leave it stale until the
+			// first payment. This runs detached so startup is not delayed.
+			if (!balance) {
+				void refreshWhileEmpty(
+					() => wallet.confirmedBalanceSat(),
+					(sat) => ui?.setStatus("pi-402", `⚡ ${formatSat(sat)} sat`),
+				);
+			}
 		});
 
 		// Release the wallet when Pi tears the extension down. Without this
