@@ -164,6 +164,7 @@ Inside Pi:
 /fund 50000     a Lightning invoice; pay it from the Wavelength app
 /deposit        an on-chain boarding address
 /balance        confirmed and pending balance
+/send <invoice> pay a Lightning invoice from the wallet, after you confirm
 /wallet         wallet status, and the balance in the status line
 /receipts       every payment made: count, all-time sats, and today's sats
 ```
@@ -171,6 +172,11 @@ Inside Pi:
 `/fund` is the quick path, since an invoice settles through a swap in seconds
 while an on-chain deposit needs a confirmation and an Ark round. Whatever you
 fund is the most the agent can ever spend.
+
+`/send` is for you, not the agent. It quotes the payment, refuses anything over
+`PI402_MAX_SAT_PER_SEND` (25,000 sat by default, fee included), and asks for an
+explicit yes on the total before any sats move. The agent has no tool that
+sends, and a `/send` does not count against the daily buying cap.
 
 ## Configure and use
 
