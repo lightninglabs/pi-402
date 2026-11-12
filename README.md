@@ -59,9 +59,13 @@ pi install npm:@lightninglabs/pi-402
 Pi's package manager downloads the package and loads it on every run. The
 package carries the embedded wallet's WASM bundle, so there is nothing to build
 and no daemon to start. You need Node.js 22.19 or newer, and we have verified it
-against Pi 1.1.0. [INSTALL.md](INSTALL.md) covers the alternatives (a git
+against Pi 1.5.2. [INSTALL.md](INSTALL.md) covers the alternatives (a git
 install, an auto-discovered directory, and `pi -e` for development) and
 troubleshooting.
+
+A fresh install targets a local regtest stack. To point it at a test network or
+mainnet, set `PI402_NETWORK` (and, on mainnet, `PI402_WALLET_PASSWORD`); the
+"Choosing a network" section of [INSTALL.md](INSTALL.md) lists every variable.
 
 pi-402 is the buyer half. It pays a seller, and there is no hosted seller to
 point it at yet, so you bring your own.

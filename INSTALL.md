@@ -3,7 +3,7 @@
 `pi-402` is a standard [Pi](https://pi.dev) extension. Pi can load an extension
 from a managed package, from an auto-discovered directory, or from a per-run
 flag, and pi-402 works with all three. Pi itself is not patched or forked. We
-have verified the install paths below against Pi 1.1.0.
+have verified the install paths below against Pi 1.5.2.
 
 ## Prerequisites
 
