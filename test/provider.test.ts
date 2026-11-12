@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseToolArguments, tokenRouteId, toOpenAiMessages, toOpenAiTools } from "../src/provider.ts";
+import {
+	parseToolArguments,
+	tokenRouteId,
+	toOpenAiMessages,
+	toOpenAiTools,
+	upstreamExtraBody,
+} from "../src/provider.ts";
 
 const CHAT = "http://localhost:8404/v1/chat/completions";
 
@@ -132,4 +138,18 @@ test("parseToolArguments survives a run the model never finished", () => {
 	// A bare array or scalar is not a valid argument object either.
 	assert.deepEqual(parseToolArguments("[1,2]"), {});
 	assert.deepEqual(parseToolArguments('"hi"'), {});
+});
+
+// Venice injects its own ~1.5k-token system prompt unless asked not to, and the
+// seller's meter debits those tokens from the buyer's bundle. A Venice model
+// has to opt out; a Baseten model must not carry a field its upstream never
+// asked for.
+test("upstreamExtraBody turns off Venice's system prompt for Venice models only", () => {
+	assert.deepEqual(upstreamExtraBody("deepseek-v4-1-flash"), {
+		venice_parameters: { include_venice_system_prompt: false },
+	});
+
+	for (const baseten of ["kimi-k3", "kimi-k3.1-pro", "glm-4.7", "deepseek-v4-flash"]) {
+		assert.deepEqual(upstreamExtraBody(baseten), {}, baseten);
+	}
 });

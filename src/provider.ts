@@ -65,6 +65,24 @@ function wireModelId(id: string): string {
 	return BASETEN_MODEL_SLUGS[id] ?? id;
 }
 
+// VENICE_MODEL_IDS are the Pi-facing ids served by a Venice upstream, whose
+// own ids are sent unchanged.
+const VENICE_MODEL_IDS = new Set(["deepseek-v4-1-flash"]);
+
+// upstreamExtraBody returns extra request fields a model's upstream needs.
+//
+// Venice prepends its own system prompt, about 1.5k tokens, to every request
+// unless told not to. Those tokens are counted in the response's usage, so the
+// seller's meter debits the buyer for text the buyer never wrote. Turning the
+// prompt off drops a one-word question from about 1,550 prompt tokens to about
+// 40, and keeps the bundle for the buyer's own tokens.
+export function upstreamExtraBody(modelId: string): Record<string, unknown> {
+	if (VENICE_MODEL_IDS.has(modelId)) {
+		return { venice_parameters: { include_venice_system_prompt: false } };
+	}
+	return {};
+}
+
 // requestUrl extracts the URL from any of the shapes fetch accepts, without
 // consuming the request body.
 function requestUrl(input: RequestInfo | URL): string {
@@ -190,6 +208,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 						model: wireModelId(model.id),
 						messages: toOpenAiMessages(context),
 						...(tools ? { tools } : {}),
+						...upstreamExtraBody(model.id),
 						max_tokens: options?.maxTokens ?? Math.floor(model.maxTokens / 3),
 						stream: true,
 						// Baseten defaults include_usage to true, but ask
