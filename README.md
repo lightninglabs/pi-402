@@ -98,11 +98,11 @@ is the way to try pi-402 end to end.
 Select a paid model and prompt:
 
 ```
-/model l402-baseten/kimi-k3           # 1M context, natively multimodal
-/model l402-baseten/kimi-k3.1-pro     # 1M context, cheaper than K3 upstream
-/model l402-baseten/glm-4.7           # 200K context
-/model l402-baseten/glm-5.2           # 200K context
-/model l402-baseten/deepseek-v4-flash # 1M context, the cheap one
+/model pi402/kimi-k3           # 1M context, natively multimodal
+/model pi402/kimi-k3.1-pro     # 1M context, cheaper than K3 upstream
+/model pi402/glm-4.7           # 200K context
+/model pi402/glm-5.2           # 200K context
+/model pi402/deepseek-v4-flash # 1M context, the cheap one
 ```
 
 These are the models the extension registers. What a given seller actually serves

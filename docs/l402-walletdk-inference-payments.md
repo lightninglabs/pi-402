@@ -24,7 +24,7 @@ proxy.
 │    agent-loop → streamFn → model registry          │   │ (aperture-based)  │
 │                    │ selects provider by model id  │   │ 402 + invoice ⇄   │
 │  ┌─────────────────▼──────── our extension ───────┐│   │ token ; meters $  │
-│  │ registerProvider("l402-baseten", {            ││HTTP│                   │
+│  │ registerProvider("pi402", {            ││HTTP│                   │
 │  │   api, baseUrl: PROXY, models:[GLM],          ││───▶│                   │
 │  │   streamSimple: OpenAI-compat + payingFetch   ││   │└────────┬──────────┘
 │  │ })                                            ││   │         │ Api-Key
@@ -61,7 +61,7 @@ wires `payingFetch` into its own OpenAI client with no core seam.
 ### What "extension-only" changes vs. the core-mod plan
 - **No pi-ai change, no coding-agent `sdk.ts` change.** Provider registration is
   the seam.
-- **Opt-in is model selection.** The user runs `/model l402-baseten/glm-…` (or a
+- **Opt-in is model selection.** The user runs `/model pi402/glm-…` (or a
   bundled preset) to activate paid inference. Clean and explicit.
 - **The one real chunk of code** is the provider's `streamSimple`: an
   OpenAI-compatible streaming translation that uses `payingFetch`. The Anthropic
@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async () => { await wallet.startAndUnlock(); });
 
-  pi.registerProvider("l402-baseten", {
+  pi.registerProvider("pi402", {
     api: "l402-openai",                         // our own api id
     baseUrl: process.env.L402_PROXY_URL,        // the Go proxy
     apiKey: "unused",                           // proxy holds the real key
@@ -201,7 +201,7 @@ Separate deployable, identical to the earlier plan:
 
 1. Pi starts → extension `session_start` loads+unlocks walletdk; if unfunded,
    `/deposit` shows a boarding address; user funds; balance confirms.
-2. User selects `/model l402-baseten/glm-4.7` and prompts.
+2. User selects `/model pi402/glm-4.7` and prompts.
 3. agent-loop → model registry → our provider `streamSimple` → OpenAI client
    whose `fetch` is `payingFetch`, `baseUrl` = proxy.
 4. First call → proxy `402` + invoice + macaroon.

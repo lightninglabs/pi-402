@@ -188,7 +188,7 @@ export PI402_DAILY_CAP_SAT=100000
 
 pi
 # then, inside Pi:
-/model l402-baseten/kimi-k3
+/model pi402/kimi-k3
 ```
 
 The per-request ceiling defaults to 1000 sats and is checked against the quoted
