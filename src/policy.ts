@@ -33,6 +33,17 @@ export function maxSatPerRequest(): number {
 	return readSatCeiling("PI402_MAX_SAT_PER_REQUEST", DEFAULT_MAX_SAT_PER_REQUEST);
 }
 
+// DEFAULT_MAX_SAT_PER_SEND caps one user-initiated /send, quoted total outflow
+// including the swap fee, when PI402_MAX_SAT_PER_SEND is unset. It is separate
+// from the per-request cap on purpose: a /send is a person paying someone, not
+// the agent buying inference, and the two limits answer different questions.
+const DEFAULT_MAX_SAT_PER_SEND = 25_000;
+
+// maxSatPerSend returns the per-/send ceiling from the environment.
+export function maxSatPerSend(): number {
+	return readSatCeiling("PI402_MAX_SAT_PER_SEND", DEFAULT_MAX_SAT_PER_SEND);
+}
+
 // PaymentScheme selects which HTTP authentication schemes the buyer will
 // answer a 402 with.
 export type PaymentScheme = "auto" | "l402";

@@ -1,7 +1,7 @@
 import nodeFs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { maxSatPerRequest } from "./policy.ts";
+import { maxSatPerRequest, maxSatPerSend } from "./policy.ts";
 import { dataDir } from "./store.ts";
 
 // WalletService runs against one of two wavewalletdk backends:
@@ -297,8 +297,26 @@ export class WalletService {
 	// plus the swap fee the wallet will actually pay. We refuse before
 	// dispatching send if that total exceeds the per-request ceiling.
 	async payInvoice(invoice: string, _amountSat: number): Promise<PayResult> {
-		const ceiling = maxSatPerRequest();
+		return this.payWithCeiling(invoice, maxSatPerRequest(), "per-request");
+	}
 
+	// sendInvoice pays a BOLT11 invoice on a person's behalf, for the /send
+	// command. It runs the same quote, ceiling check and dispatch as an L402
+	// payment, against the per-send ceiling, and calls confirm with the quoted
+	// total outflow before anything is dispatched. A confirm that resolves false
+	// stops the payment with a SendDeclinedError and nothing is spent.
+	async sendInvoice(invoice: string, confirm: (outflowSat: number) => Promise<boolean>): Promise<PayResult> {
+		return this.payWithCeiling(invoice, maxSatPerSend(), "per-send", confirm);
+	}
+
+	// payWithCeiling is the shared two-phase send behind payInvoice and
+	// sendInvoice. ceilingName only labels the refusal message.
+	private async payWithCeiling(
+		invoice: string,
+		ceiling: number,
+		ceilingName: string,
+		confirm?: (outflowSat: number) => Promise<boolean>,
+	): Promise<PayResult> {
 		if (this.gateway) {
 			const quote = await this.rest("/v1/wallet/prepare-send", {
 				invoice,
@@ -306,7 +324,10 @@ export class WalletService {
 				max_credit_topup_sat: ceiling,
 			});
 			const outflow = quotedOutflowSat(quote);
-			assertWithinCeiling(outflow, ceiling);
+			assertWithinCeiling(outflow, ceiling, ceilingName);
+			if (confirm && !(await confirm(outflow))) {
+				throw new SendDeclinedError();
+			}
 
 			// Open the settle stream BEFORE dispatching the send. Subscribing
 			// after send relies on include_existing to replay the settle, and a
@@ -333,7 +354,10 @@ export class WalletService {
 			MaxCreditTopupSat: ceiling,
 		});
 		const outflow = quotedOutflowSat(quote);
-		assertWithinCeiling(outflow, ceiling);
+		assertWithinCeiling(outflow, ceiling, ceilingName);
+		if (confirm && !(await confirm(outflow))) {
+			throw new SendDeclinedError();
+		}
 
 		// Same ordering as the sidecar path: subscribe before sendPrepared so a
 		// fast settle cannot be missed.
@@ -821,12 +845,21 @@ function quotedOutflowSat(quote: any): number {
 // assertWithinCeiling refuses a quoted outflow that exceeds the per-request
 // spend ceiling. This honors the documented invariant that the budget is
 // asserted on the quoted total outflow, not the invoice face value.
-function assertWithinCeiling(outflowSat: number, ceilingSat: number): void {
+function assertWithinCeiling(outflowSat: number, ceilingSat: number, name = "per-request"): void {
 	if (!Number.isFinite(outflowSat) || outflowSat <= 0) {
 		throw new Error(`prepare-send returned an unusable quote (outflow ${outflowSat} sat)`);
 	}
 	if (outflowSat > ceilingSat) {
-		throw new Error(`quoted outflow ${outflowSat} sat exceeds per-request cap ${ceilingSat} sat`);
+		throw new Error(`quoted outflow ${outflowSat} sat exceeds ${name} cap ${ceilingSat} sat`);
+	}
+}
+
+// SendDeclinedError is thrown by sendInvoice when the confirm callback refuses
+// the quoted payment, so the caller can tell a cancel from a failure.
+export class SendDeclinedError extends Error {
+	constructor() {
+		super("send cancelled");
+		this.name = "SendDeclinedError";
 	}
 }
 

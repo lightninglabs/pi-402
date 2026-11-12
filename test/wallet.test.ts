@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
+	SendDeclinedError,
 	WalletService,
 	withFetchEnabled,
 	writeSeedFile,
@@ -565,6 +566,69 @@ test("payInvoice asks for credit caps equal to the per-request ceiling", async (
 			process.env.PI402_MAX_SAT_PER_REQUEST = saved;
 		}
 	}
+});
+
+// withEnv runs fn with one environment variable set, then restores it.
+async function withEnv(name: string, value: string, fn: () => Promise<void>): Promise<void> {
+	const saved = process.env[name];
+	process.env[name] = value;
+	try {
+		await fn();
+	} finally {
+		if (saved === undefined) {
+			delete process.env[name];
+		} else {
+			process.env[name] = saved;
+		}
+	}
+}
+
+// A /send is held to its own ceiling, not the per-request one, and the refusal
+// names it so the person can tell which limit to raise.
+test("sendInvoice refuses a quote over the per-send cap before asking to confirm", async () => {
+	await withEnv("PI402_MAX_SAT_PER_SEND", "500", async () => {
+		const wallet = new WalletService();
+		const calls: string[] = [];
+		(wallet as any).call = async (method: string) => {
+			calls.push(method);
+			return { SendIntentID: "i", PaymentHash: "h", AmountSat: 600, FeeSat: 2 };
+		};
+
+		let asked = false;
+		await assert.rejects(
+			() =>
+				wallet.sendInvoice("lnbc1invoice", async () => {
+					asked = true;
+					return true;
+				}),
+			/exceeds per-send cap 500/,
+		);
+		assert.equal(asked, false);
+		assert.deepEqual(calls, ["prepareSend"]);
+	});
+});
+
+// Declining the confirmation must leave the wallet untouched: the quote is
+// only a quote, and nothing is dispatched or subscribed to.
+test("sendInvoice stops at a declined confirmation without dispatching", async () => {
+	const wallet = new WalletService();
+	const calls: string[] = [];
+	(wallet as any).call = async (method: string) => {
+		calls.push(method);
+		return { SendIntentID: "i", PaymentHash: "h", AmountSat: 300, FeeSat: 2 };
+	};
+
+	let quotedOutflow = 0;
+	await assert.rejects(
+		() =>
+			wallet.sendInvoice("lnbc1invoice", async (outflowSat) => {
+				quotedOutflow = outflowSat;
+				return false;
+			}),
+		SendDeclinedError,
+	);
+	assert.equal(quotedOutflow, 302);
+	assert.deepEqual(calls, ["prepareSend"]);
 });
 
 // installFakeBridge swaps globalThis.sqliteBridge for one that counts its
