@@ -278,7 +278,7 @@ it exactly as it paid the first. Same code path as cold start.
 |---|---|---|
 | Baseten 403, "check the api-key you provided" | The client's L402 `Authorization` shadows the upstream credential | Needs the `Header.Set` director fix (aperture `a3969ce`) |
 | Aperture start-up error about an unset env var | `${BASETEN_API_KEY}` not exported into aperture's environment | Export it in the same shell that launches aperture |
-| "payment N sat exceeds per-request cap" | `PI402_MAX_SAT_PER_REQUEST` below the bundle quote | Raise it above 11,500 |
+| "out of budget: this payment is N sat, over the ... per-payment limit" | `PI402_MAX_SAT_PER_REQUEST` below the bundle quote | Raise it above 11,500 |
 | 402 loops forever | Invoice paid but preimage never observed | Check the swap server and the wallet subscription; the payer waits on the settled entry |
 | Balance shows 0 after `/deposit` | Boarding output not yet confirmed or not yet rolled into a round | This is the §1 latency; pre-fund |
 | `/fund` invoice never settles | Swap server unreachable, or no inbound capacity for the receive | Fall back to the pre-funded balance and keep going |

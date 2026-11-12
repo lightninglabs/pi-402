@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { buildBudgetPolicy, maxSatPerRequest, mppIntents, paymentScheme, readSatCeiling } from "../src/policy.ts";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import {
+	buildBudgetPolicy,
+	dailyLimitMessage,
+	maxSatPerRequest,
+	mppIntents,
+	paymentScheme,
+	perPaymentLimitMessage,
+	readSatCeiling,
+} from "../src/policy.ts";
 
 // buildBudgetPolicy takes an ExtensionAPI it never uses; a bare cast keeps the
 // tests free of the Pi runtime.
@@ -78,7 +87,7 @@ test("per-request cap rejects an over-ceiling payment", async () => {
 	process.env.PI402_DAILY_CAP_SAT = "10000";
 	const policy = buildBudgetPolicy(pi);
 	await policy.assertAllowed(ctx(100));
-	await assert.rejects(() => policy.assertAllowed(ctx(101)), /exceeds per-request cap/);
+	await assert.rejects(() => policy.assertAllowed(ctx(101)), /over the 100 sat per-payment limit/);
 });
 
 test("daily cap rejects once cumulative spend would exceed it", async () => {
@@ -86,9 +95,36 @@ test("daily cap rejects once cumulative spend would exceed it", async () => {
 	process.env.PI402_DAILY_CAP_SAT = "150";
 	const policy = buildBudgetPolicy(pi);
 	await policy.assertAllowed(ctx(100));
-	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /daily limit/);
 	// A payment that still fits is allowed.
 	await policy.assertAllowed(ctx(50));
+});
+
+test("limit refusals say how to proceed and are never retried by Pi", async () => {
+	process.env.PI402_MAX_SAT_PER_REQUEST = "9000";
+	process.env.PI402_DAILY_CAP_SAT = "9500";
+	const policy = buildBudgetPolicy(pi);
+	await policy.assertAllowed(ctx(9_000));
+
+	const perPayment = await policy.assertAllowed(ctx(9_001)).catch((error: Error) => error.message);
+	const daily = await policy.assertAllowed(ctx(1_000)).catch((error: Error) => error.message);
+	const overWholeCap = dailyLimitMessage(10_000, 0, 9_500);
+
+	assert.match(String(perPayment), /9,001 sat, over the 9,000 sat per-payment limit \(PI402_MAX_SAT_PER_REQUEST\)/);
+	assert.match(
+		String(daily),
+		/1,000 sat and 9,000 sat is already counted against today, over the 9,500 sat daily limit \(PI402_DAILY_CAP_SAT\)\. It resets at 00:00 UTC, or raise it/,
+	);
+	assert.match(overWholeCap, /more than the whole 9,500 sat daily limit/);
+	assert.doesNotMatch(overWholeCap, /resets/);
+	assert.match(perPaymentLimitMessage(1_200, 1_000, true), /this payment, with fees, is 1,200 sat/);
+
+	// Pi reads the "500" in "9,500" as an HTTP 500 and retries it, unless the
+	// message has a phrase from its never-retry list.
+	for (const errorMessage of [perPayment, daily, overWholeCap]) {
+		assert.match(String(errorMessage), /out of budget/);
+		assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage } as any), false);
+	}
 });
 
 test("daily cap counts the ledger's spend on every assertion", async () => {
@@ -98,7 +134,7 @@ test("daily cap counts the ledger's spend on every assertion", async () => {
 	// The ledger says 100 sats already went out today (a prior process), so
 	// only 50 remain under the cap.
 	const policy = buildBudgetPolicy(pi, { spentTodaySat: async () => 100 });
-	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /daily limit/);
 	await policy.assertAllowed(ctx(50));
 });
 
@@ -135,7 +171,7 @@ test("a ledger that grows behind the process's back still counts", async () => {
 
 	await policy.assertAllowed(ctx(20));
 	ledgerTotal = 120;
-	await assert.rejects(() => policy.assertAllowed(ctx(40)), /exceed daily cap/);
+	await assert.rejects(() => policy.assertAllowed(ctx(40)), /daily limit/);
 });
 
 test("an unreadable ledger degrades to the in-memory counter", async () => {
@@ -150,7 +186,7 @@ test("an unreadable ledger degrades to the in-memory counter", async () => {
 	// A broken ledger must not block inference; the caps still apply from
 	// the in-memory counter.
 	await policy.assertAllowed(ctx(100));
-	await assert.rejects(() => policy.assertAllowed(ctx(60)), /exceed daily cap/);
+	await assert.rejects(() => policy.assertAllowed(ctx(60)), /daily limit/);
 });
 
 test("daily counter resets at the UTC day boundary", async () => {
@@ -172,7 +208,7 @@ test("daily counter resets at the UTC day boundary", async () => {
 	try {
 		const policy = buildBudgetPolicy(pi);
 		await policy.assertAllowed(ctx(100));
-		await assert.rejects(() => policy.assertAllowed(ctx(1)), /exceed daily cap/);
+		await assert.rejects(() => policy.assertAllowed(ctx(1)), /daily limit/);
 
 		// Roll to the next UTC day; the counter should reset and allow spend.
 		fakeNow = realDate.parse("2026-07-07T00:00:01.000Z");

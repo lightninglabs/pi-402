@@ -10,6 +10,7 @@ import {
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
 	fundsFrom,
+	parseWalletStatus,
 	SendDeclinedError,
 	WalletService,
 	withFetchEnabled,
@@ -336,6 +337,76 @@ test("fundsFrom reads confirmed and arriving sats in either casing, not credit",
 	assert.deepEqual(fundsFrom({ confirmed_sat: "-5" }), { confirmedSat: 0, arrivingSat: 0 });
 });
 
+test("status reads the gateway's live status response", async () => {
+	// A live signet waved response.
+	const stub = gatewayStub({
+		"/v1/wallet/status": () => ({
+			status: 200,
+			body: {
+				ready: true,
+				unlocked: true,
+				network: "signet",
+				balance: {
+					confirmed_sat: "49745",
+					pending_in_sat: "50000",
+					pending_out_sat: "0",
+					credit_available_sat: "0",
+					credit_reserved_sat: "0",
+				},
+				pending_count: 0,
+			},
+		}),
+	});
+
+	process.env.PI402_WALLETD_GATEWAY = "http://localhost:10041";
+	try {
+		const wallet = new WalletService();
+		// Skip the bootstrap.
+		(wallet as any).gateway = process.env.PI402_WALLETD_GATEWAY;
+		assert.deepEqual(await wallet.status(), {
+			ready: true,
+			network: "signet",
+			spendableSat: 49_745,
+			arrivingSat: 50_000,
+			outgoingSat: 0,
+			creditSat: 0,
+		});
+		assert.deepEqual(stub.calls, ["/v1/wallet/status"]);
+	} finally {
+		stub.restore();
+		delete process.env.PI402_WALLETD_GATEWAY;
+	}
+});
+
+test("parseWalletStatus reads the WASM bridge's PascalCase response", () => {
+	const status = parseWalletStatus({
+		Ready: false,
+		Network: "regtest",
+		Balance: { ConfirmedSat: 1_000, PendingInSat: 0, PendingOutSat: 300, CreditAvailableSat: 5 },
+	});
+	assert.deepEqual(status, {
+		ready: false,
+		network: "regtest",
+		spendableSat: 1_000,
+		arrivingSat: 0,
+		outgoingSat: 300,
+		creditSat: 5,
+	});
+});
+
+test("parseWalletStatus defaults missing fields and shows garbage amounts as zero", () => {
+	assert.deepEqual(parseWalletStatus({}), {
+		ready: true,
+		network: "",
+		spendableSat: 0,
+		arrivingSat: 0,
+		outgoingSat: 0,
+		creditSat: 0,
+	});
+	assert.equal(parseWalletStatus({ balance: { confirmed_sat: "nope" } }).spendableSat, 0);
+	assert.equal(parseWalletStatus({ balance: { confirmed_sat: "-5" } }).spendableSat, 0);
+});
+
 test("startAndUnlock leaves an already-unlocked wallet alone", async () => {
 	// Unlocking an unlocked wallet is an error, so a usable wallet must be
 	// left untouched.
@@ -647,7 +718,7 @@ test("payInvoice asks for credit caps equal to the per-request ceiling", async (
 			return { SendIntentID: "i", PaymentHash: "h", AmountSat: 3000, FeeSat: 1 };
 		};
 
-		await assert.rejects(() => wallet.payInvoice("lnbc1invoice", 20), /exceeds per-request cap 2500/);
+		await assert.rejects(() => wallet.payInvoice("lnbc1invoice", 20), /over the 2,500 sat per-payment limit/);
 		assert.equal(seen.length, 1);
 		assert.equal(seen[0].Invoice, "lnbc1invoice");
 		assert.equal(seen[0].MaxCreditSat, 2500);
@@ -694,7 +765,7 @@ test("sendInvoice refuses a quote over the per-send cap before asking to confirm
 					asked = true;
 					return true;
 				}),
-			/exceeds per-send cap 500/,
+			/over the 500 sat per-payment limit \(PI402_MAX_SAT_PER_SEND\)/,
 		);
 		assert.equal(asked, false);
 		assert.deepEqual(calls, ["prepareSend"]);
