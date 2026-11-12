@@ -1,6 +1,6 @@
 {
 	"name": "@lightninglabs/pi-402",
-	"version": "0.0.3",
+	"version": "0.0.4",
 	"description": "Pay for Pi inference with Lightning: an L402 + walletdk extension for the Pi coding agent",
 	"type": "module",
 	"license": "MIT",
