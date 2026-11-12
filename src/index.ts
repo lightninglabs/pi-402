@@ -1,11 +1,12 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { BundleTracker, type Colorizer, FileBundleStore, formatBar, MemoryBundleStore } from "./bundle.ts";
 import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
 import { refreshWhileEmpty } from "./footer.ts";
 import { formatSat } from "./format.ts";
 import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
-import { makeStreamSimple } from "./provider.ts";
+import { makeStreamSimple, wireModelId } from "./provider.ts";
 import { dataDir, FileCredentialStore, FileReceiptLog, FileTokenStore } from "./store.ts";
 import { formatFooter, type Pending, SpotRate } from "./usd.ts";
 import { sharedWalletService } from "./wallet.ts";
@@ -42,7 +43,40 @@ export default function (pi: ExtensionAPI): void {
 	let pending: Pending = { outSat: 0, inSat: 0 };
 	const drawBalance = (sat: number): void => {
 		lastBalance = sat;
-		ui?.setStatus("pi-402", formatFooter(sat, spot.rate(), pending));
+		ui?.setStatus("pi-402", formatFooter(sat, spot.rate(), pending, bundleBar()));
+	};
+
+	// The bundle bar is drawn from the tracker's last estimate. Colors come
+	// from Pi's theme when the UI has one, and the bar is plain text
+	// otherwise.
+	let bundle: { remaining: number; total: number } | undefined;
+	const bundleBar = (): string | undefined => {
+		if (!bundle) {
+			return undefined;
+		}
+		let colorize: Colorizer | undefined;
+		try {
+			const theme = ui?.theme;
+			if (theme) {
+				colorize = (color, text) => theme.fg(color, text);
+			}
+		} catch {
+			// A stale session's theme is not worth failing the draw.
+		}
+		return formatBar(bundle.remaining, bundle.total, colorize);
+	};
+
+	// refreshBundle re-reads the estimate for the model in use and redraws.
+	let currentModel: string | undefined;
+	const refreshBundle = async (): Promise<void> => {
+		if (!tracker || !currentModel) {
+			return;
+		}
+		const state = await tracker.current(currentModel);
+		bundle = state && { remaining: state.remaining, total: state.bundleTokens };
+		if (lastBalance !== undefined) {
+			drawBalance(lastBalance);
+		}
 	};
 
 	// readBalance reads the spendable balance and remembers what is pending,
@@ -83,6 +117,14 @@ export default function (pi: ExtensionAPI): void {
 		? new MockInvoicePayer()
 		: new WalletInvoicePayer(wallet, async ({ amountPaidSat }) => {
 				await showBalance(amountPaidSat);
+
+				// A payment bought a new bundle for the model in use. This
+				// runs detached: the rate fetch must never hold up the
+				// paid retry.
+				const model = currentModel;
+				if (tracker && model) {
+					void tracker.start(model).then(refreshBundle, () => {});
+				}
 			});
 
 	// Durable state: paid tokens and the receipt ledger live under the data
@@ -94,6 +136,19 @@ export default function (pi: ExtensionAPI): void {
 	const credentialStore = mockMode ? undefined : new FileCredentialStore(join(stateDir, "credentials.json"));
 	const receiptLog = mockMode ? undefined : new FileReceiptLog(join(stateDir, "receipts.ndjson"));
 
+	// The bundle tracker keeps the estimate of what is left of the paid
+	// bundle, per seller origin and model. An unparseable proxy URL just
+	// means no bar.
+	let tracker: BundleTracker | undefined;
+	try {
+		tracker = new BundleTracker(
+			new URL(proxyUrl).origin,
+			mockMode ? new MemoryBundleStore() : new FileBundleStore(join(stateDir, "bundles.json")),
+		);
+	} catch {
+		// No bar.
+	}
+
 	// The daily cap is seeded from the ledger, so a restart mid-day cannot
 	// reset the day's spend to zero.
 	const policy = buildBudgetPolicy(pi, receiptLog);
@@ -104,6 +159,13 @@ export default function (pi: ExtensionAPI): void {
 		pi.on("session_start", async (_event, ctx) => {
 			await wallet.startAndUnlock();
 			ui = ctx.ui;
+
+			// Show the persisted bundle estimate for the selected model, so
+			// a restart does not blank the bar until the first request.
+			if (ctx.model?.provider === PROVIDER_ID) {
+				currentModel = wireModelId(ctx.model.id);
+			}
+			await refreshBundle();
 			const balance = await showBalance();
 
 			// The wallet reports ready before its first sync completes, so a
@@ -113,6 +175,11 @@ export default function (pi: ExtensionAPI): void {
 			if (!balance) {
 				void refreshWhileEmpty(readBalance, drawBalance);
 			}
+		});
+
+		pi.on("model_select", async (event) => {
+			currentModel = event.model.provider === PROVIDER_ID ? wireModelId(event.model.id) : undefined;
+			await refreshBundle();
 		});
 
 		// Release the wallet when Pi tears the extension down. Without this
@@ -207,7 +274,23 @@ export default function (pi: ExtensionAPI): void {
 				maxTokens: 32_768,
 			},
 		],
-		streamSimple: makeStreamSimple({ payer, policy, tokenStore, credentialStore, receiptLog }),
+		streamSimple: makeStreamSimple({
+			payer,
+			policy,
+			tokenStore,
+			credentialStore,
+			receiptLog,
+			onRequest: (model) => {
+				const first = currentModel === undefined;
+				currentModel = model;
+				if (first) {
+					void refreshBundle();
+				}
+			},
+			onUsage: (model, promptTokens, completionTokens) => {
+				void tracker?.debit(model, promptTokens, completionTokens).then(refreshBundle, () => {});
+			},
+		}),
 	});
 
 	registerWalletCommands(pi, wallet);

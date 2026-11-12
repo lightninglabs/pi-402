@@ -38,6 +38,15 @@ export interface StreamDeps {
 	// spends never pollute the real ledger.
 	receiptLog?: { store(receipt: ReceiptRecord): Promise<void> | void };
 
+	// onRequest runs as each request starts, with the wire model id, so the
+	// caller knows which model a payment made during it is for.
+	onRequest?: (model: string) => void;
+
+	// onUsage runs once per response that reported usage, with the wire model
+	// id and the prompt and completion token counts (reasoning included).
+	// Failures in it never reach the response.
+	onUsage?: (model: string, promptTokens: number, completionTokens: number) => void;
+
 	// returnInvoiceMinter mints the amountless refund invoice a session
 	// deposit needs at open. The embedded wallet cannot provide one, so the
 	// extension leaves this unset and the session intent stays refused; the
@@ -61,7 +70,7 @@ const BASETEN_MODEL_SLUGS: Record<string, string> = {
 };
 
 // wireModelId resolves the model id sent to the proxy/upstream.
-function wireModelId(id: string): string {
+export function wireModelId(id: string): string {
 	return BASETEN_MODEL_SLUGS[id] ?? id;
 }
 
@@ -180,6 +189,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 				});
 
 				const wireModel = wireModelId(model.id);
+				deps.onRequest?.(wireModel);
 
 				const client = new OpenAI({
 					baseURL: model.baseUrl,
@@ -224,6 +234,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 
 				const blocks = new BlockWriter(output, stream);
 
+				let sawUsage = false;
 				for await (const chunk of sse) {
 					const choice = chunk.choices[0];
 					const delta = choice?.delta as OpenAiDelta | undefined;
@@ -255,6 +266,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 					// as running totals on every chunk); the last write
 					// wins either way.
 					if (chunk.usage) {
+						sawUsage = true;
 						output.usage.input = chunk.usage.prompt_tokens ?? 0;
 						output.usage.output = chunk.usage.completion_tokens ?? 0;
 						output.usage.totalTokens = chunk.usage.total_tokens ?? 0;
@@ -268,6 +280,16 @@ export function makeStreamSimple(deps: StreamDeps) {
 				}
 
 				blocks.close();
+
+				// The seller meters this same usage, so the bundle bar
+				// debits it here, for paid and reused credentials alike.
+				if (sawUsage) {
+					try {
+						deps.onUsage?.(wireModel, output.usage.input, output.usage.output);
+					} catch {
+						// The bar is a convenience.
+					}
+				}
 
 				// A model can emit tool calls without the upstream setting the
 				// matching finish_reason. Pi routes on the stop reason, so
