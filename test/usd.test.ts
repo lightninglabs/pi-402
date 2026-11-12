@@ -22,6 +22,17 @@ test("formatFooter omits the dollars when no rate is known", () => {
 	assert.equal(formatFooter(7_000, 80_400), "⚡ 7,000 sat ($5.63)");
 });
 
+test("formatFooter shows pending amounts after the spendable balance, only when non-zero", () => {
+	// The dollar value stays on the spendable number, not the pending one.
+	assert.equal(formatFooter(10_000, 80_400, { outSat: 7_000, inSat: 0 }), "⚡ 10,000 sat ($8.04) · 7,000 pending");
+	assert.equal(formatFooter(10_000, 80_400, { outSat: 0, inSat: 2_000 }), "⚡ 10,000 sat ($8.04) · 2,000 arriving");
+	assert.equal(
+		formatFooter(0, undefined, { outSat: 7_000, inSat: 2_000 }),
+		"⚡ 0 sat · 7,000 pending · 2,000 arriving",
+	);
+	assert.equal(formatFooter(10_000, 80_400, { outSat: 0, inSat: 0 }), "⚡ 10,000 sat ($8.04)");
+});
+
 test("parseSpot accepts a positive amount and rejects junk", () => {
 	assert.equal(parseSpot({ data: { amount: "80400.12" } }), 80_400.12);
 	assert.equal(parseSpot({ data: { amount: "abc" } }), undefined);

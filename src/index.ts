@@ -7,7 +7,7 @@ import { MockInvoicePayer, WalletInvoicePayer } from "./payer.ts";
 import { buildBudgetPolicy } from "./policy.ts";
 import { makeStreamSimple } from "./provider.ts";
 import { dataDir, FileCredentialStore, FileReceiptLog, FileTokenStore } from "./store.ts";
-import { formatFooter, SpotRate } from "./usd.ts";
+import { formatFooter, type Pending, SpotRate } from "./usd.ts";
 import { sharedWalletService } from "./wallet.ts";
 
 // PROVIDER_ID is the model provider this extension registers. Users select it
@@ -39,9 +39,18 @@ export default function (pi: ExtensionAPI): void {
 	// the background and cached, so it never delays startup or a payment; the
 	// footer redraws with the last balance when a rate first arrives.
 	let lastBalance: number | undefined;
+	let pending: Pending = { outSat: 0, inSat: 0 };
 	const drawBalance = (sat: number): void => {
 		lastBalance = sat;
-		ui?.setStatus("pi-402", formatFooter(sat, spot.rate()));
+		ui?.setStatus("pi-402", formatFooter(sat, spot.rate(), pending));
+	};
+
+	// readBalance reads the spendable balance and remembers what is pending,
+	// so a draw shows the in-flight amounts beside it.
+	const readBalance = async (): Promise<number> => {
+		const status = await wallet.status();
+		pending = { outSat: status.outgoingSat, inSat: status.arrivingSat };
+		return status.spendableSat;
 	};
 	const spot = new SpotRate(fetch, () => {
 		if (lastBalance !== undefined) {
@@ -55,7 +64,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		try {
-			const balance = await wallet.confirmedBalanceSat();
+			const balance = await readBalance();
 			drawBalance(balance);
 			if (paidSat !== undefined) {
 				target.notify(`pi-402 paid ${formatSat(paidSat)} sat (${formatSat(balance)} sat left)`, "info");
@@ -102,7 +111,7 @@ export default function (pi: ExtensionAPI): void {
 			// footer for a bounded time rather than leave it stale until the
 			// first payment. This runs detached so startup is not delayed.
 			if (!balance) {
-				void refreshWhileEmpty(() => wallet.confirmedBalanceSat(), drawBalance);
+				void refreshWhileEmpty(readBalance, drawBalance);
 			}
 		});
 

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { formatSat } from "./format.ts";
 import { type FileReceiptLog, receiptPaidSat } from "./store.ts";
+import { formatFooter } from "./usd.ts";
 import { SendDeclinedError, type WalletService, type WalletStatus } from "./wallet.ts";
 
 // registerWalletCommands wires the /wallet, /deposit, /fund, /send and /balance
@@ -11,7 +12,10 @@ export function registerWalletCommands(pi: ExtensionAPI, wallet: WalletService):
 		description: "Show the pi-402 wallet: network, spendable, arriving and outgoing sats",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const status = await wallet.status();
-			ctx.ui.setStatus("pi-402", `⚡ ${formatSat(status.spendableSat)} sat`);
+			ctx.ui.setStatus(
+				"pi-402",
+				formatFooter(status.spendableSat, undefined, { outSat: status.outgoingSat, inSat: status.arrivingSat }),
+			);
 			ctx.ui.notify(formatWalletStatus(status), "info");
 		},
 	});
