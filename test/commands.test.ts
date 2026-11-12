@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseFundAmount } from "../src/commands.ts";
+import { parseFundAmount, parseSendInvoice } from "../src/commands.ts";
 
 test("parseFundAmount reads a plain sat amount", () => {
 	assert.equal(parseFundAmount("50000"), 50_000);
@@ -36,4 +36,23 @@ test("parseFundAmount rejects anything that is not a positive whole sat count", 
 	// Beyond the safe-integer range the value can no longer round-trip, so it
 	// must not reach the wallet.
 	assert.equal(parseFundAmount("9".repeat(20)), null);
+});
+
+// A real signet-shaped invoice body: the checksum is not verified here, only the
+// shape, so this is just a long enough bech32 string with the right prefix.
+const SAMPLE_BODY = "pp5c52kh56u268nk2872alv5r2ecktkglj8sdwncgqndfxdhp3as5kqdpzwp5j6dpsxgs8wctvd3jhggrxw4hxg6twvucqzpgxqrrss";
+
+test("parseSendInvoice accepts a bolt11 invoice, with or without the lightning: scheme", () => {
+	const invoice = `lnbc100u1${SAMPLE_BODY}`;
+	assert.equal(parseSendInvoice(invoice), invoice);
+	assert.equal(parseSendInvoice(`  ${invoice}\n`), invoice);
+	assert.equal(parseSendInvoice(`lightning:${invoice}`), invoice);
+	assert.equal(parseSendInvoice(invoice.toUpperCase()), invoice);
+	assert.equal(parseSendInvoice(`lntbs1p${SAMPLE_BODY}`), `lntbs1p${SAMPLE_BODY}`);
+});
+
+test("parseSendInvoice rejects anything that is not an invoice", () => {
+	for (const bad of ["", "   ", "50000", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "lnbc100u1short", "send me"]) {
+		assert.equal(parseSendInvoice(bad), null, JSON.stringify(bad));
+	}
 });
