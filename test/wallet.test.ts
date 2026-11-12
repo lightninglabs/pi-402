@@ -9,8 +9,8 @@ import {
 	assertCanAfford,
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
-	SendDeclinedError,
 	fundsFrom,
+	SendDeclinedError,
 	WalletService,
 	withFetchEnabled,
 	writeSeedFile,
@@ -708,6 +708,9 @@ test("sendInvoice stops at a declined confirmation without dispatching", async (
 	const calls: string[] = [];
 	(wallet as any).call = async (method: string) => {
 		calls.push(method);
+		if (method === "balance") {
+			return { ConfirmedSat: 10_000 };
+		}
 		return { SendIntentID: "i", PaymentHash: "h", AmountSat: 300, FeeSat: 2 };
 	};
 
@@ -721,7 +724,34 @@ test("sendInvoice stops at a declined confirmation without dispatching", async (
 		SendDeclinedError,
 	);
 	assert.equal(quotedOutflow, 302);
-	assert.deepEqual(calls, ["prepareSend"]);
+	assert.deepEqual(calls, ["prepareSend", "balance"]);
+});
+
+// /send goes through the same quote step as an L402 payment, so it gets the
+// same refusal when the confirmed balance cannot cover the quoted outflow, and
+// the person is never asked to confirm a payment that could not go out.
+test("sendInvoice refuses an unaffordable payment before asking to confirm", async () => {
+	const wallet = new WalletService();
+	const calls: string[] = [];
+	(wallet as any).call = async (method: string) => {
+		calls.push(method);
+		if (method === "balance") {
+			return { ConfirmedSat: 100 };
+		}
+		return { SendIntentID: "i", PaymentHash: "h", AmountSat: 300, FeeSat: 2 };
+	};
+
+	let asked = false;
+	await assert.rejects(
+		() =>
+			wallet.sendInvoice("lnbc1invoice", async () => {
+				asked = true;
+				return true;
+			}),
+		/available balance is 100 sat, but this payment needs 302 sat/,
+	);
+	assert.equal(asked, false);
+	assert.deepEqual(calls, ["prepareSend", "balance"]);
 });
 
 // installFakeBridge swaps globalThis.sqliteBridge for one that counts its
