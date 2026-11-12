@@ -4,6 +4,8 @@ import {
 	type AssistantMessageEventStream,
 	type Context,
 	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentTools,
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -347,6 +349,24 @@ function emptyAssistantMessage(model: Model<Api>): AssistantMessage {
 	};
 }
 
+// currentTools returns the tools Pi offers for this request. Pi 1.5 carries
+// the system prompt and the tool declarations as system messages inside
+// context.messages and no longer fills context.tools, so they are read back with
+// getCurrentTools. The Context field is kept as a fallback for a caller that
+// still builds the older shape. Reading only the field sends the model no tools
+// and no system prompt at all.
+function currentTools(context: Context): NonNullable<Context["tools"]> {
+	if (context.tools?.length) {
+		return context.tools;
+	}
+	return getCurrentTools(context.messages);
+}
+
+// currentSystemPrompt is the counterpart of currentTools for the system prompt.
+function currentSystemPrompt(context: Context): string {
+	return getCurrentSystemPrompt(context.messages) || context.systemPrompt || "";
+}
+
 // toOpenAiTools projects Pi's tool declarations into the OpenAI function-tool
 // schema. Declaring the tools matters beyond enabling tool use: Pi's system
 // prompt tells the model it has tools regardless, so a model that is not given
@@ -355,10 +375,11 @@ function emptyAssistantMessage(model: Model<Api>): AssistantMessage {
 // ends up reading. Sending the declarations is what moves those calls onto the
 // structured tool_calls channel where they can be translated.
 export function toOpenAiTools(context: Context): OpenAI.Chat.Completions.ChatCompletionTool[] | undefined {
-	if (!context.tools?.length) {
+	const tools = currentTools(context);
+	if (!tools.length) {
 		return undefined;
 	}
-	return context.tools.map((tool) => ({
+	return tools.map((tool) => ({
 		type: "function" as const,
 		function: {
 			name: tool.name,
@@ -390,8 +411,9 @@ function textOf(content: unknown): string {
 // resolves by calling the same tool again.
 export function toOpenAiMessages(context: Context): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
 	const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-	if (context.systemPrompt) {
-		messages.push({ role: "system", content: context.systemPrompt });
+	const systemPrompt = currentSystemPrompt(context);
+	if (systemPrompt) {
+		messages.push({ role: "system", content: systemPrompt });
 	}
 
 	for (const msg of context.messages) {
