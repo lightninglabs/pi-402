@@ -102,6 +102,122 @@ export function applyUsage(state: BundleState, promptTokens: number, completionT
 	return { ...state, remaining: Math.max(0, state.remaining - cost) };
 }
 
+// StreamEstimate is what an in-flight response is expected to cost so far:
+// the prompt estimate, known before the first token, and a completion
+// estimate that grows with the streamed text.
+export interface StreamEstimate {
+	model: string;
+	prompt: number;
+	completion: number;
+}
+
+// StreamProjection tracks the in-flight responses, so the bar can show the
+// bundle as it will be once they settle. It is display state only and is never
+// persisted: the real debit is applied when a response ends, and the entry is
+// dropped after it. With several responses streaming at once, each one's debit
+// is computed on its own and the debits are summed, which is how the seller
+// meters them (one debit per request). An entry is dropped only after its
+// debit has been persisted, so a finished response is never counted twice.
+export class StreamProjection {
+	private readonly streams = new Map<object, StreamEstimate>();
+
+	update(stream: object, model: string, prompt: number, completion: number): void {
+		this.streams.set(stream, { model, prompt, completion });
+	}
+
+	get(stream: object): StreamEstimate | undefined {
+		return this.streams.get(stream);
+	}
+
+	drop(stream: object): void {
+		this.streams.delete(stream);
+	}
+
+	// debit is the bundle tokens all in-flight responses for the model are
+	// expected to cost.
+	debit(rate: Pick<ModelRate, "inputUsdPerMtok" | "outputUsdPerMtok">, model: string): number {
+		let total = 0;
+		for (const stream of this.streams.values()) {
+			if (stream.model === model) {
+				total += debitTokens(rate, stream.prompt, stream.completion);
+			}
+		}
+		return total;
+	}
+
+	// project is the estimate's remainder with the in-flight debits taken off,
+	// never below zero.
+	project(state: Pick<BundleState, "remaining" | "inputUsdPerMtok" | "outputUsdPerMtok">, model: string): number {
+		return Math.max(0, state.remaining - this.debit(state, model));
+	}
+}
+
+// estimateTokens is the token estimate for a count of characters or bytes: a
+// quarter of it, rounded up. It mirrors how the seller settles a stream that
+// ends without a usage block.
+export function estimateTokens(units: number): number {
+	return Math.ceil(units / 4);
+}
+
+// LIVE_REDRAW_MS is the shortest gap between two live footer redraws, about
+// four a second.
+export const LIVE_REDRAW_MS = 250;
+
+// Throttle runs a function at most once per interval, coalescing the calls
+// in between into one trailing run.
+export interface Throttle {
+	call(): void;
+	cancel(): void;
+}
+
+// throttle wraps fn so it runs at most once per interval: immediately when
+// the interval has passed, otherwise once at the end of it. The clock and
+// timer are injectable for tests. A throw from fn is swallowed, because the
+// footer must never affect the stream that drives it.
+export function throttle(
+	fn: () => void,
+	intervalMs = LIVE_REDRAW_MS,
+	now: () => number = Date.now,
+	schedule: (cb: () => void, ms: number) => () => void = (cb, ms) => {
+		const timer = setTimeout(cb, ms);
+		timer.unref?.();
+		return () => clearTimeout(timer);
+	},
+): Throttle {
+	let last = Number.NEGATIVE_INFINITY;
+	let cancelPending: (() => void) | undefined;
+
+	const run = (): void => {
+		last = now();
+		try {
+			fn();
+		} catch {
+			// The footer is a convenience.
+		}
+	};
+
+	return {
+		call() {
+			if (cancelPending) {
+				return;
+			}
+			const wait = intervalMs - (now() - last);
+			if (wait <= 0) {
+				run();
+				return;
+			}
+			cancelPending = schedule(() => {
+				cancelPending = undefined;
+				run();
+			}, wait);
+		},
+		cancel() {
+			cancelPending?.();
+			cancelPending = undefined;
+		},
+	};
+}
+
 // isBundleExpired reports whether the bundle is past its validity window.
 export function isBundleExpired(state: BundleState, now: number): boolean {
 	return now - state.startedAt >= state.validDays * MS_PER_DAY;
