@@ -48,6 +48,8 @@ Ships as a single extension — Pi core is not modified.
 - The wallet is bootstrapped once per session (`session_start`) and reused.
 - Budget policy is asserted before any wallet action, on the *quoted total
   outflow* (invoice principal + swap fee), not the invoice face value.
+- A send the confirmed balance cannot cover is refused before dispatch, never
+  left to time out in the swap.
 - The L402 buyer loop retries exactly once after payment; the token cache
   prevents re-payment on retry.
 - No API keys live in Pi — the proxy holds the model credential.
