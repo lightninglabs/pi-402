@@ -67,8 +67,23 @@ A fresh install targets a local regtest stack. To point it at a test network or
 mainnet, set `PI402_NETWORK` (and, on mainnet, `PI402_WALLET_PASSWORD`); the
 "Choosing a network" section of [INSTALL.md](INSTALL.md) lists every variable.
 
-pi-402 is the buyer half. It pays a seller, and there is no hosted seller to
-point it at yet, so you bring your own.
+pi-402 is the buyer half. It pays a seller. A demo seller runs on mainnet at
+<https://pi402.roasbeef.computer>, which lists its model and prices, or you can
+bring your own.
+
+## Try the demo seller
+
+The demo seller sells `deepseek-v4-1-flash` by the token, and every payment is
+real bitcoin on mainnet. Fund the wallet with `/fund` once Pi is running.
+
+```bash
+export L402_PROXY_URL="https://pi402.roasbeef.computer/api/v1"
+export PI402_NETWORK=mainnet
+export PI402_WALLET_PASSWORD="choose a password"
+export PI402_MAX_SAT_PER_REQUEST=2000                       # above the bundle price
+pi
+# then, inside Pi: /fund 10000, then /model pi402/deepseek-v4-1-flash
+```
 
 ## Bring your own seller
 

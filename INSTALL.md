@@ -12,8 +12,9 @@ install. To make a payment you also need two things that pi-402 does not
 provide:
 
 - An L402 proxy that fronts a model, reachable at the URL you put in
-  `L402_PROXY_URL`. There is no hosted endpoint, so you run one yourself or use
-  one run by a provider. See [Bring your own seller](#bring-your-own-seller).
+  `L402_PROXY_URL`. A demo seller runs on mainnet at
+  <https://pi402.roasbeef.computer>, or you can run one yourself or use one run
+  by a provider. See [Bring your own seller](#bring-your-own-seller).
 - A funded wallet. The wallet is built in and creates itself on first use, and
   you fund it with `/fund` once Pi is running. See [Wallet](#wallet).
 
