@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { type Context, normalizeContext } from "@earendil-works/pi-ai";
 import {
 	parseToolArguments,
 	tokenRouteId,
@@ -71,6 +72,42 @@ test("toOpenAiTools sends nothing when Pi offers no tools", () => {
 	// upstreams reject it outright.
 	assert.equal(toOpenAiTools({ messages: [] }), undefined);
 	assert.equal(toOpenAiTools({ messages: [], tools: [] }), undefined);
+});
+
+// Pi 1.5 hands a provider a transcript whose system prompt and tool
+// declarations live in a leading system message, with no systemPrompt or tools
+// field on the context. normalizeContext builds that same shape, so these tests
+// exercise what Pi really sends rather than the shape older Pi versions used.
+function piTranscript(): Context {
+	return normalizeContext({
+		systemPrompt: "You are Pi, a coding agent.",
+		messages: [{ role: "user", content: "write hello to a file", timestamp: 1 }],
+		tools: [{ name: "write", description: "Write a file", parameters: { type: "object" } as never }],
+	}) as unknown as Context;
+}
+
+test("toOpenAiTools reads the tools from Pi's transcript system message", () => {
+	const context = piTranscript();
+
+	// The older fields are absent on the transcript shape; without reading the
+	// system message the model is offered nothing and answers that it has no
+	// file tools.
+	assert.equal(context.tools, undefined);
+
+	const tools = toOpenAiTools(context);
+	assert.equal(tools?.length, 1);
+	assert.equal(tools?.[0].function.name, "write");
+});
+
+test("toOpenAiMessages leads with the system prompt from Pi's transcript", () => {
+	const messages = toOpenAiMessages(piTranscript());
+
+	assert.equal(messages[0].role, "system");
+	assert.match(String(messages[0].content), /You are Pi, a coding agent\./);
+
+	// The prompt is sent once, and the user turn still follows it.
+	assert.equal(messages.filter((m) => m.role === "system").length, 1);
+	assert.equal(messages[1].role, "user");
 });
 
 test("toOpenAiMessages replays the tool-call round trip", () => {
