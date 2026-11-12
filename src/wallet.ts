@@ -415,13 +415,11 @@ export class WalletService {
 		}
 	}
 
-	// confirmedBalanceSat returns the spendable wallet balance in sats.
+	// confirmedBalanceSat returns the spendable wallet balance in sats. It
+	// reads the same status /wallet shows, so a payment still in flight, which
+	// the wallet no longer counts as spendable, is not counted here either.
 	async confirmedBalanceSat(): Promise<number> {
-		if (this.gateway) {
-			const res = await this.rest("/v1/wallet/balance", {});
-			return Number(res.confirmed_sat ?? 0);
-		}
-		return this.requireCall()("confirmedBalanceSat");
+		return (await this.status()).spendableSat;
 	}
 
 	// status returns the wallet's readiness, network and balance.

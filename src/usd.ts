@@ -24,11 +24,30 @@ export function formatUsd(sat: number, btcUsd: number): string {
 	return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// formatFooter is the footer line: the sat balance, with the dollar value in
-// parentheses when a rate is known and without it otherwise.
-export function formatFooter(sat: number, btcUsd?: number): string {
-	const base = `⚡ ${formatSat(sat)} sat`;
-	return btcUsd === undefined ? base : `${base} (${formatUsd(sat, btcUsd)})`;
+// Pending is the in-flight part of a wallet balance: sats leaving in a payment
+// that has not settled, and sats arriving from a deposit that has not confirmed.
+// Neither is spendable.
+export interface Pending {
+	outSat: number;
+	inSat: number;
+}
+
+// formatFooter is the footer line: the spendable sat balance, with the dollar
+// value in parentheses when a rate is known and without it otherwise. Pending
+// amounts follow it, each only when non-zero, and the dollar value stays on the
+// spendable number alone.
+export function formatFooter(sat: number, btcUsd?: number, pending?: Pending): string {
+	let line = `⚡ ${formatSat(sat)} sat`;
+	if (btcUsd !== undefined) {
+		line += ` (${formatUsd(sat, btcUsd)})`;
+	}
+	if (pending && pending.outSat > 0) {
+		line += ` · ${formatSat(pending.outSat)} pending`;
+	}
+	if (pending && pending.inSat > 0) {
+		line += ` · ${formatSat(pending.inSat)} arriving`;
+	}
+	return line;
 }
 
 // parseSpot extracts the rate from Coinbase's response body, or undefined if

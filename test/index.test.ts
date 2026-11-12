@@ -13,7 +13,7 @@ const WALLET_KEY = Symbol.for("pi-402.walletService");
 // fakeRuntime installs a stand-in for the embedded wallet runtime's dispatcher
 // and records every verb the extension sends it. Like the real runtime, it
 // refuses a second start.
-function fakeRuntime(balance: () => number) {
+function fakeRuntime(balance: () => number, pendingOutSat = 0) {
 	const calls: string[] = [];
 	let started = false;
 	(globalThis as any).wavewalletdkCall = async (method: string) => {
@@ -26,9 +26,7 @@ function fakeRuntime(balance: () => number) {
 				started = true;
 				return {};
 			case "status":
-				return { Ready: true };
-			case "confirmedBalanceSat":
-				return balance();
+				return { Ready: true, Balance: { ConfirmedSat: balance(), PendingOutSat: pendingOutSat } };
 			default:
 				return {};
 		}
@@ -124,4 +122,15 @@ test("a replaced session's shutdown leaves the wallet running, a quit stops it",
 	await second.get("session_start")?.({}, fakeUi().ctx);
 	await second.get("session_shutdown")?.({ reason: "quit" }, {});
 	assert.ok(calls.includes("stop"));
+});
+
+test("the footer shows the spendable balance and the pending outbound amount apart", async () => {
+	// Right after a payment the wallet reports nothing spendable and the sats
+	// in flight as outgoing; the footer must not present those as available.
+	fakeRuntime(() => 0, 7_000);
+
+	const ui = fakeUi();
+	await loadExtension().get("session_start")?.({}, ui.ctx);
+
+	assert.equal(ui.statuses[0], "⚡ 0 sat · 7,000 pending");
 });
