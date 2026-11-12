@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseFundAmount, parseSendInvoice } from "../src/commands.ts";
+import { formatWalletStatus, parseFundAmount, parseSendInvoice } from "../src/commands.ts";
 
 test("parseFundAmount reads a plain sat amount", () => {
 	assert.equal(parseFundAmount("50000"), 50_000);
@@ -56,4 +56,61 @@ test("parseSendInvoice rejects anything that is not an invoice", () => {
 	for (const bad of ["", "   ", "50000", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "lnbc100u1short", "send me"]) {
 		assert.equal(parseSendInvoice(bad), null, JSON.stringify(bad));
 	}
+});
+
+const empty = {
+	ready: true,
+	network: "signet",
+	spendableSat: 0,
+	arrivingSat: 0,
+	outgoingSat: 0,
+	creditSat: 0,
+};
+
+test("formatWalletStatus shows an empty wallet and how to fund it", () => {
+	const text = formatWalletStatus(empty);
+	assert.match(text, /^pi-402 wallet \(signet\)\n {2}spendable {2}0 sat/);
+	assert.match(text, /The wallet is empty\. Run \/fund <sats>/);
+	assert.doesNotMatch(text, /arriving|outgoing|credit/);
+});
+
+test("formatWalletStatus never calls a wallet that is still syncing empty", () => {
+	const text = formatWalletStatus({ ...empty, ready: false });
+	assert.match(text, /still starting up or syncing/);
+	assert.doesNotMatch(text, /The wallet is empty/);
+});
+
+test("formatWalletStatus shows a deposit that is still arriving", () => {
+	const text = formatWalletStatus({ ...empty, arrivingSat: 50_000 });
+	assert.match(text, / {2}arriving {3}50,000 sat/);
+	assert.match(text, /Deposit on the way: spendable once it confirms/);
+	assert.doesNotMatch(text, /The wallet is empty/);
+});
+
+test("formatWalletStatus shows a top-up arriving on a funded wallet", () => {
+	const text = formatWalletStatus({ ...empty, spendableSat: 49_745, arrivingSat: 50_000 });
+	assert.match(text, / {2}spendable {2}49,745 sat\n {2}arriving {3}50,000 sat/);
+	assert.match(text, /Deposit on the way: spendable once it confirms/);
+});
+
+test("formatWalletStatus does not call a wallet with credit empty", () => {
+	const text = formatWalletStatus({ ...empty, creditSat: 500 });
+	assert.match(text, / {2}credit {5}500 sat/);
+	assert.doesNotMatch(text, /The wallet is empty/);
+});
+
+test("formatWalletStatus shows a funded wallet without a hint", () => {
+	const text = formatWalletStatus({
+		...empty,
+		network: "mainnet",
+		spendableSat: 49_745,
+		outgoingSat: 8_000,
+		creditSat: 120,
+	});
+	assert.equal(
+		text,
+		["pi-402 wallet (mainnet)", "  spendable  49,745 sat", "  outgoing   8,000 sat", "  credit     120 sat"].join(
+			"\n",
+		),
+	);
 });
