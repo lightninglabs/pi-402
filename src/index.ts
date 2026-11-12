@@ -8,7 +8,7 @@ import { buildBudgetPolicy } from "./policy.ts";
 import { makeStreamSimple } from "./provider.ts";
 import { dataDir, FileCredentialStore, FileReceiptLog, FileTokenStore } from "./store.ts";
 import { formatFooter, SpotRate } from "./usd.ts";
-import { WalletService } from "./wallet.ts";
+import { sharedWalletService } from "./wallet.ts";
 
 // PROVIDER_ID is the model provider this extension registers. Users select it
 // with `/model pi402/<model>`.
@@ -23,8 +23,10 @@ const DEFAULT_PROXY_URL = "http://localhost:8402";
 export default function (pi: ExtensionAPI): void {
 	const proxyUrl = process.env.L402_PROXY_URL ?? DEFAULT_PROXY_URL;
 
-	// The wallet holds the embedded walletdk instance for the whole session.
-	const wallet = new WalletService();
+	// The wallet holds the embedded walletdk instance. Pi runs this factory
+	// again whenever it replaces the session, and the runtime is process-wide,
+	// so every run shares one service instead of starting a second runtime.
+	const wallet = sharedWalletService();
 
 	// The footer status shows the wallet balance, and a one-line notice marks
 	// each payment, so an agent that spends on its own never does it silently.
