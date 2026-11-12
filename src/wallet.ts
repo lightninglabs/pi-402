@@ -147,6 +147,12 @@ export class WalletService {
 			return;
 		}
 
+		// A runtime that exited, or a wallet that was stopped, is brought
+		// up from scratch: loadWavewalletdk installs a fresh runtime when
+		// the dead one's dispatcher is gone.
+		this.runtimeExited = false;
+		this.stopped = false;
+
 		const password = resolveWalletPassword();
 
 		this.gateway = process.env.PI402_WALLETD_GATEWAY;
@@ -648,6 +654,10 @@ export class WalletService {
 		this.runtimeExited = true;
 		this.ready = false;
 
+		// Drop the dead dispatcher so the next start loads a new runtime
+		// instead of reusing one nothing answers.
+		delete (globalThis as any)[WASM_GLOBAL];
+
 		if (err === undefined) {
 			console.error("[pi-402] embedded wallet runtime exited");
 		} else {
@@ -664,6 +674,23 @@ export class WalletService {
 		}
 		return this.call;
 	}
+}
+
+// WALLET_SERVICE_KEY is where the process-wide WalletService lives. It is keyed
+// on globalThis, not held in module state, because Pi evaluates the extension
+// module afresh on a reload.
+const WALLET_SERVICE_KEY = Symbol.for("pi-402.walletService");
+
+// sharedWalletService returns the one WalletService of this process. The
+// embedded runtime is process-global (one wavewalletdkCall dispatcher, one
+// SQLite bridge, and a start verb that refuses a second call), so the service
+// that owns it is too. Pi calls the extension factory again each time it
+// replaces the session (new, clear, reload, resume, fork); every call has to
+// find the wallet the first one started rather than start it a second time.
+export function sharedWalletService(): WalletService {
+	const g = globalThis as any;
+	g[WALLET_SERVICE_KEY] ??= new WalletService();
+	return g[WALLET_SERVICE_KEY] as WalletService;
 }
 
 // startConfigFromEnv builds the embedded WASM start config. Defaults target
