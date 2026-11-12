@@ -10,8 +10,8 @@ import {
 	assertSeedIsSafeToGenerate,
 	assertWasmDirIsCommonJs,
 	fundsFrom,
-	SendDeclinedError,
 	parseWalletStatus,
+	SendDeclinedError,
 	WalletService,
 	withFetchEnabled,
 	writeSeedFile,
@@ -335,6 +335,7 @@ test("fundsFrom reads confirmed and arriving sats in either casing, not credit",
 	});
 	assert.deepEqual(fundsFrom({ ConfirmedSat: 100, CreditAvailableSat: 20 }), { confirmedSat: 100, arrivingSat: 0 });
 	assert.deepEqual(fundsFrom({ confirmed_sat: "-5" }), { confirmedSat: 0, arrivingSat: 0 });
+});
 
 test("status reads the gateway's live status response", async () => {
 	// A live signet waved response.

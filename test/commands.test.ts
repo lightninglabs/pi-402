@@ -56,6 +56,7 @@ test("parseSendInvoice rejects anything that is not an invoice", () => {
 	for (const bad of ["", "   ", "50000", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "lnbc100u1short", "send me"]) {
 		assert.equal(parseSendInvoice(bad), null, JSON.stringify(bad));
 	}
+});
 
 const empty = {
 	ready: true,
