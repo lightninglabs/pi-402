@@ -1,6 +1,14 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { BundleTracker, type Colorizer, FileBundleStore, formatBar, MemoryBundleStore } from "./bundle.ts";
+import {
+	BundleTracker,
+	type Colorizer,
+	FileBundleStore,
+	formatBar,
+	MemoryBundleStore,
+	StreamProjection,
+	throttle,
+} from "./bundle.ts";
 import { registerReceiptCommands, registerWalletCommands } from "./commands.ts";
 import { refreshWhileEmpty } from "./footer.ts";
 import { formatSat } from "./format.ts";
@@ -49,7 +57,12 @@ export default function (pi: ExtensionAPI): void {
 	// The bundle bar is drawn from the tracker's last estimate. Colors come
 	// from Pi's theme when the UI has one, and the bar is plain text
 	// otherwise.
-	let bundle: { remaining: number; total: number } | undefined;
+	//
+	// While responses stream, the bar shows the persisted remainder less what
+	// they are expected to cost so far. The projection is display state only:
+	// the persisted estimate changes when a response ends.
+	let bundle: { remaining: number; total: number; inputUsdPerMtok: number; outputUsdPerMtok: number } | undefined;
+	const live = new StreamProjection();
 	const bundleBar = (): string | undefined => {
 		if (!bundle) {
 			return undefined;
@@ -63,7 +76,8 @@ export default function (pi: ExtensionAPI): void {
 		} catch {
 			// A stale session's theme is not worth failing the draw.
 		}
-		return formatBar(bundle.remaining, bundle.total, colorize);
+		const remaining = currentModel ? live.project(bundle, currentModel) : bundle.remaining;
+		return formatBar(remaining, bundle.total, colorize);
 	};
 
 	// refreshBundle re-reads the estimate for the model in use and redraws.
@@ -73,10 +87,38 @@ export default function (pi: ExtensionAPI): void {
 			return;
 		}
 		const state = await tracker.current(currentModel);
-		bundle = state && { remaining: state.remaining, total: state.bundleTokens };
+		bundle = state && {
+			remaining: state.remaining,
+			total: state.bundleTokens,
+			inputUsdPerMtok: state.inputUsdPerMtok,
+			outputUsdPerMtok: state.outputUsdPerMtok,
+		};
 		if (lastBalance !== undefined) {
 			drawBalance(lastBalance);
 		}
+	};
+
+	// redrawLive repaints the footer while a response streams, at most about
+	// four times a second. A failed draw is swallowed by the throttle.
+	const redrawLive = throttle(() => {
+		if (lastBalance !== undefined) {
+			drawBalance(lastBalance);
+		}
+	});
+
+	// settle persists a response's debit, then drops its projection and
+	// redraws from the persisted estimate. Dropping only after the debit
+	// lands keeps the bar from counting the response twice or not at all.
+	const settle = (stream: object, model: string, promptTokens: number, completionTokens: number): void => {
+		const done = (): void => {
+			live.drop(stream);
+			void refreshBundle().catch(() => {});
+		};
+		if (!tracker) {
+			done();
+			return;
+		}
+		void tracker.debit(model, promptTokens, completionTokens).then(done, done);
 	};
 
 	// readBalance reads the spendable balance and remembers what is pending,
@@ -287,8 +329,28 @@ export default function (pi: ExtensionAPI): void {
 					void refreshBundle();
 				}
 			},
-			onUsage: (model, promptTokens, completionTokens) => {
-				void tracker?.debit(model, promptTokens, completionTokens).then(refreshBundle, () => {});
+			onProgress: (model, promptEstimate, completionEstimate, stream) => {
+				live.update(stream, model, promptEstimate, completionEstimate);
+				redrawLive.call();
+			},
+			// The exact usage replaces the projection: the bar lands on the
+			// real figure, which may differ a little from the last estimate.
+			onUsage: (model, promptTokens, completionTokens, stream) => {
+				settle(stream, model, promptTokens, completionTokens);
+			},
+			onStreamEnd: (model, stream, outcome) => {
+				// A response that was never accepted debits nothing. One that
+				// was accepted and then ended without usage is settled at its
+				// estimate, which mirrors the seller: it debits an abandoned
+				// stream at prompt plus completion estimates too. The clamp
+				// at zero is applyUsage's.
+				const estimate = outcome === "no-usage" ? live.get(stream) : undefined;
+				if (estimate) {
+					settle(stream, model, estimate.prompt, estimate.completion);
+				} else {
+					live.drop(stream);
+					void refreshBundle().catch(() => {});
+				}
 			},
 		}),
 	});

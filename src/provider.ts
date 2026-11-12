@@ -18,6 +18,7 @@ import {
 } from "@lightninglabs/aperture-client";
 import type { BuyerPolicy, InvoicePayer } from "@lightninglabs/aperture-core";
 import OpenAI from "openai";
+import { estimateTokens } from "./bundle.ts";
 import { mppIntents } from "./policy.ts";
 import type { ReceiptRecord } from "./store.ts";
 
@@ -46,8 +47,23 @@ export interface StreamDeps {
 
 	// onUsage runs once per response that reported usage, with the wire model
 	// id and the prompt and completion token counts (reasoning included).
-	// Failures in it never reach the response.
-	onUsage?: (model: string, promptTokens: number, completionTokens: number) => void;
+	// Failures in it never reach the response. The stream handle is the same
+	// one onProgress received for this response.
+	onUsage?: (model: string, promptTokens: number, completionTokens: number, stream: object) => void;
+
+	// onProgress runs as a response streams, once at the start and then per
+	// delta, with running estimates: the prompt from the request body size and
+	// the completion from the characters streamed so far, reasoning included,
+	// each a quarter of the count rounded up. The stream handle identifies the
+	// response, so concurrent ones stay apart. Failures in it never reach the
+	// response.
+	onProgress?: (model: string, promptEstimate: number, completionEstimate: number, stream: object) => void;
+
+	// onStreamEnd runs instead of onUsage when a response ends without usage.
+	// "no-usage" means the request was accepted and then the stream ended or
+	// broke (a user abort, or an upstream that omits usage) and "failed" means
+	// it never got a stream (a rejected request or a budget refusal).
+	onStreamEnd?: (model: string, stream: object, outcome: "no-usage" | "failed") => void;
 
 	// returnInvoiceMinter mints the amountless refund invoice a session
 	// deposit needs at open. The embedded wallet cannot provide one, so the
@@ -148,6 +164,34 @@ export function makeStreamSimple(deps: StreamDeps) {
 		(async () => {
 			const output = emptyAssistantMessage(model);
 
+			// The live-bar bookkeeping: the handle that names this response,
+			// whether the seller accepted the request, and whether a final
+			// outcome has been reported yet.
+			const handle = {};
+			let accepted = false;
+			let reported = false;
+			let promptEstimate = 0;
+			let completionChars = 0;
+			const wireModel = wireModelId(model.id);
+			const progress = (): void => {
+				try {
+					deps.onProgress?.(wireModel, promptEstimate, estimateTokens(completionChars), handle);
+				} catch {
+					// The bar is a convenience.
+				}
+			};
+			const end = (outcome: "no-usage" | "failed"): void => {
+				if (reported) {
+					return;
+				}
+				reported = true;
+				try {
+					deps.onStreamEnd?.(wireModel, handle, outcome);
+				} catch {
+					// The bar is a convenience.
+				}
+			};
+
 			try {
 				// The receipt adapter stamps each settled payment with the
 				// model it bought inference for. It is built per call, so
@@ -190,7 +234,6 @@ export function makeStreamSimple(deps: StreamDeps) {
 					},
 				});
 
-				const wireModel = wireModelId(model.id);
 				deps.onRequest?.(wireModel);
 
 				const client = new OpenAI({
@@ -215,22 +258,28 @@ export function makeStreamSimple(deps: StreamDeps) {
 
 				const tools = toOpenAiTools(context);
 
-				const sse = await client.chat.completions.create(
-					{
-						model: wireModelId(model.id),
-						messages: toOpenAiMessages(context),
-						...(tools ? { tools } : {}),
-						...upstreamExtraBody(model.id),
-						max_tokens: options?.maxTokens ?? Math.floor(model.maxTokens / 3),
-						stream: true,
-						// Baseten defaults include_usage to true, but ask
-						// explicitly: the final chunk's usage is what the
-						// seller-side metering debits, so both sides should
-						// see the same numbers.
-						stream_options: { include_usage: true },
-					},
-					{ signal: options?.signal },
-				);
+				const body = {
+					model: wireModel,
+					messages: toOpenAiMessages(context),
+					...(tools ? { tools } : {}),
+					...upstreamExtraBody(model.id),
+					max_tokens: options?.maxTokens ?? Math.floor(model.maxTokens / 3),
+					stream: true as const,
+					// Baseten defaults include_usage to true, but ask
+					// explicitly: the final chunk's usage is what the
+					// seller-side metering debits, so both sides should
+					// see the same numbers.
+					stream_options: { include_usage: true },
+				};
+
+				// The prompt estimate is known before the first token: the
+				// body size over four, which is also how the seller settles a
+				// stream that ends without usage.
+				promptEstimate = estimateTokens(Buffer.byteLength(JSON.stringify(body)));
+				progress();
+
+				const sse = await client.chat.completions.create(body, { signal: options?.signal });
+				accepted = true;
 
 				stream.push({ type: "start", partial: output });
 
@@ -247,10 +296,14 @@ export function makeStreamSimple(deps: StreamDeps) {
 					// the model works.
 					if (delta?.reasoning_content) {
 						blocks.appendThinking(delta.reasoning_content);
+						completionChars += delta.reasoning_content.length;
+						progress();
 					}
 
 					if (delta?.content) {
 						blocks.appendText(delta.content);
+						completionChars += delta.content.length;
+						progress();
 					}
 
 					for (const call of delta?.tool_calls ?? []) {
@@ -286,11 +339,14 @@ export function makeStreamSimple(deps: StreamDeps) {
 				// The seller meters this same usage, so the bundle bar
 				// debits it here, for paid and reused credentials alike.
 				if (sawUsage) {
+					reported = true;
 					try {
-						deps.onUsage?.(wireModel, output.usage.input, output.usage.output);
+						deps.onUsage?.(wireModel, output.usage.input, output.usage.output, handle);
 					} catch {
 						// The bar is a convenience.
 					}
+				} else {
+					end("no-usage");
 				}
 
 				// A model can emit tool calls without the upstream setting the
@@ -309,6 +365,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 				});
 				stream.end();
 			} catch (error) {
+				end(accepted ? "no-usage" : "failed");
 				output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				// The OpenAI SDK wraps transport-level throws (including
 				// budget-policy rejections from the paying fetch) in a
