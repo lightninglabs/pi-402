@@ -9,8 +9,8 @@ import { dataDir, FileCredentialStore, FileReceiptLog, FileTokenStore } from "./
 import { WalletService } from "./wallet.ts";
 
 // PROVIDER_ID is the model provider this extension registers. Users select it
-// with `/model l402-baseten/<model>`.
-const PROVIDER_ID = "l402-baseten";
+// with `/model pi402/<model>`.
+const PROVIDER_ID = "pi402";
 
 // DEFAULT_PROXY_URL is the local L402 proxy used when L402_PROXY_URL is unset.
 const DEFAULT_PROXY_URL = "http://localhost:8402";

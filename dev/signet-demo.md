@@ -233,7 +233,7 @@ Then in the session:
 /balance                      # show the pre-funded wallet
 /fund 20000                   # live top-up: pay this from Wavelength
 /balance                      # watch it land
-/model l402-baseten/kimi-k3
+/model pi402/kimi-k3
 ```
 
 ## 6. Act three: the prompt

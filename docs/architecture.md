@@ -80,7 +80,7 @@ receipt ledger, the stream translation).
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| Default export (`index.ts`) | The provider id `l402-baseten`, the four registered models, the default proxy URL, the choice between mock and real wiring, the `session_start` hook. | Any payment logic, and any Pi internals. |
+| Default export (`index.ts`) | The provider id `pi402`, the four registered models, the default proxy URL, the choice between mock and real wiring, the `session_start` hook. | Any payment logic, and any Pi internals. |
 | `makeStreamSimple` (`provider.ts`) | The mapping from Pi's `Context` to an OpenAI chat request, the mapping from the SSE reply to Pi stream events, the model-id table `BASETEN_MODEL_SLUGS`, the per-model token route (`tokenRouteId`). | The 402 handling, which is inside the paying `fetch`; the wallet. |
 | `BlockWriter` (`provider.ts`) | Which content block is open, buffered tool-call argument text, the map from upstream tool-call index to content index. One instance per call. | The `AssistantMessage` lifetime; `makeStreamSimple` creates it. |
 | `buildBudgetPolicy` (`policy.ts`) | The per-request ceiling, the daily ceiling, the in-memory daily counter and its UTC day key. Also the scheme and intent selection (`paymentScheme`, `mppIntents`). | The ledger contents (`FileReceiptLog`), and the decision of when to ask (the paying `fetch` calls `assertAllowed`). |
@@ -132,7 +132,7 @@ sequenceDiagram
     opt not mock
         E->>Pi: on("session_start", wallet.startAndUnlock)
     end
-    E->>Pi: registerProvider("l402-baseten", models, streamSimple)
+    E->>Pi: registerProvider("pi402", models, streamSimple)
     E->>Pi: registerWalletCommands(pi, wallet)
     opt receiptLog defined
         E->>Pi: registerReceiptCommands(pi, receiptLog)
