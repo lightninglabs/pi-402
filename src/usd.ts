@@ -35,8 +35,8 @@ export interface Pending {
 // formatFooter is the footer line: the spendable sat balance, with the dollar
 // value in parentheses when a rate is known and without it otherwise. Pending
 // amounts follow it, each only when non-zero, and the dollar value stays on the
-// spendable number alone.
-export function formatFooter(sat: number, btcUsd?: number, pending?: Pending): string {
+// spendable number alone. The bundle bar, when there is one, comes last.
+export function formatFooter(sat: number, btcUsd?: number, pending?: Pending, bundleBar?: string): string {
 	let line = `⚡ ${formatSat(sat)} sat`;
 	if (btcUsd !== undefined) {
 		line += ` (${formatUsd(sat, btcUsd)})`;
@@ -46,6 +46,9 @@ export function formatFooter(sat: number, btcUsd?: number, pending?: Pending): s
 	}
 	if (pending && pending.inSat > 0) {
 		line += ` · ${formatSat(pending.inSat)} arriving`;
+	}
+	if (bundleBar) {
+		line += ` · ${bundleBar}`;
 	}
 	return line;
 }

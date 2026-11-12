@@ -134,3 +134,34 @@ test("the footer shows the spendable balance and the pending outbound amount apa
 
 	assert.equal(ui.statuses[0], "⚡ 0 sat · 7,000 pending");
 });
+
+test("the footer shows the persisted bundle bar, colored by the theme, after a restart", async () => {
+	fakeRuntime(() => 10_000);
+	delete process.env.L402_PROXY_URL;
+
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const dir = process.env.PI402_DATA_DIR as string;
+	await mkdir(dir, { recursive: true });
+	const bundle = {
+		model: "deepseek-v4-1-flash",
+		bundleTokens: 500_000,
+		remaining: 310_000,
+		startedAt: Date.now(),
+		validDays: 30,
+		inputUsdPerMtok: 0.375,
+		outputUsdPerMtok: 1.5,
+	};
+	await writeFile(
+		join(dir, "bundles.json"),
+		JSON.stringify({ version: 1, bundles: { "http://localhost:8402|deepseek-v4-1-flash": bundle } }),
+	);
+
+	const ui = fakeUi();
+	const ctx = {
+		ui: { ...ui.ctx.ui, theme: { fg: (color: string, text: string) => `[${color}]${text}` } },
+		model: { provider: "pi402", id: "deepseek-v4-1-flash" },
+	};
+	await loadExtension().get("session_start")?.({}, ctx);
+
+	assert.equal(ui.statuses[0], "⚡ 10,000 sat · [success]▰▰▰▱▱ ~310k/500k tok");
+});
