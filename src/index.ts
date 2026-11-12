@@ -99,6 +99,18 @@ export default function (pi: ExtensionAPI): void {
 		apiKey: "unused",
 		models: [
 			{
+				// Sent as-is: this is Venice's own id, for a seller whose
+				// upstream is Venice (api.venice.ai/api/v1) rather than
+				// Baseten. Point L402_PROXY_URL at the seller's /api/v1.
+				id: "deepseek-v4-1-flash",
+				name: "DeepSeek V4.1 Flash (L402)",
+				input: ["text", "image"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 32_768,
+			},
+			{
 				// Maps to deepseek-ai/DeepSeek-V4-Flash-0731 on the wire.
 				// The budget option: its bundle quotes at roughly half a
 				// GLM-4.7 bundle, so it is also the cheapest way to
