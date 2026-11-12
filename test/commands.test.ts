@@ -40,7 +40,8 @@ test("parseFundAmount rejects anything that is not a positive whole sat count", 
 
 // A real signet-shaped invoice body: the checksum is not verified here, only the
 // shape, so this is just a long enough bech32 string with the right prefix.
-const SAMPLE_BODY = "pp5c52kh56u268nk2872alv5r2ecktkglj8sdwncgqndfxdhp3as5kqdpzwp5j6dpsxgs8wctvd3jhggrxw4hxg6twvucqzpgxqrrss";
+const SAMPLE_BODY =
+	"pp5c52kh56u268nk2872alv5r2ecktkglj8sdwncgqndfxdhp3as5kqdpzwp5j6dpsxgs8wctvd3jhggrxw4hxg6twvucqzpgxqrrss";
 
 test("parseSendInvoice accepts a bolt11 invoice, with or without the lightning: scheme", () => {
 	const invoice = `lnbc100u1${SAMPLE_BODY}`;
