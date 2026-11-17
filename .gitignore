@@ -6,3 +6,6 @@ dist/
 # The embedded wallet's WASM bundle (about 137 MB). It is staged by
 # scripts/stage-wasm.sh and ships in the npm package, not in git.
 wasm/
+# rpi-402 build outputs.
+rpi-402/target/
+rpi-402/result*

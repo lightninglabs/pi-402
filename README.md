@@ -186,6 +186,12 @@ The WASM bundle is not in git. To work on the embedded wallet, build it with
 `make wasm-wallet` in Wavelength and run `scripts/stage-wasm.sh <path-to-bin/wasm>`.
 `npm publish` refuses to run unless that staged bundle is complete.
 
+## rpi
+
+[`rpi-402/`](rpi-402/README.md) is the same provider as a native plugin for
+[rpi](https://github.com/bigfish1913/pi-rust). It shares this extension's
+settings and data directory, so a bundle bought in Pi is spent from rpi too.
+
 ## Docs
 
 - [`docs/architecture.md`](docs/architecture.md): a map of the extension: components, request and payment pipelines, storage, and concurrency.
