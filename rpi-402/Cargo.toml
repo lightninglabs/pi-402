@@ -1,0 +1,40 @@
+[package]
+name = "rpi-402"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "rpi provider plugin that pays for inference over L402 with a Wavelength wallet"
+repository = "https://github.com/lightninglabs/pi-402"
+publish = false
+
+[lib]
+name = "rpi_402"
+# cdylib is what rpi loads; rlib lets the integration tests drive the
+# provider without a host.
+crate-type = ["cdylib", "rlib"]
+
+# The host and the plugin SDK must come from the same rpi revision. The Nix
+# flake pins its rpi input to this revision and checks that Cargo.lock agrees.
+[dependencies]
+rpi-plugin-sdk = { git = "https://github.com/bigfish1913/pi-rust", rev = "d3e388d169bacf4351be2aefd76ba8d1944ded6f", features = ["provider"] }
+rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "d3e388d169bacf4351be2aefd76ba8d1944ded6f", features = ["providers"] }
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+# The same serde_json features as the rpi workspace, so JSON crossing the
+# plugin ABI serializes the way the host expects.
+serde_json = { version = "1", features = ["preserve_order", "raw_value", "float_roundtrip"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+axum = "0.7"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }

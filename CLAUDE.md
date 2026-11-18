@@ -26,6 +26,9 @@ Ships as a single extension — Pi core is not modified.
   the paid-token cache and the append-only payment receipt ledger.
 - `src/commands.ts` — `/wallet`, `/deposit`, `/fund`, `/balance`, `/receipts`
   slash commands.
+- `rpi-402/` — the Rust port for [rpi](https://github.com/bigfish1913/pi-rust):
+  a `cdylib` provider plugin with its own Cargo crate and Nix flake. It shares
+  the TS extension's settings and `PI402_DATA_DIR`. See `rpi-402/CLAUDE.md`.
 - `scripts/stage-wasm.sh` — copies a built Wavelength `bin/wasm` into `./wasm`
   (git-ignored, shipped in the npm package) and writes `wasm/package.json`
   with `{"type":"commonjs"}`; `--verify` is the `prepublishOnly` guard.
