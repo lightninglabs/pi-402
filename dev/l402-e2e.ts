@@ -32,7 +32,7 @@ import { WalletService } from "../src/wallet.ts";
 
 const l402ProxyUrl = process.env.L402_PROXY_URL ?? "http://127.0.0.1:8504";
 const mppProxyUrl = process.env.MPP_PROXY_URL ?? l402ProxyUrl;
-const model = process.env.PI402_TEST_MODEL ?? "zai-org/GLM-4.7";
+const model = process.env.PI402_TEST_MODEL ?? "zai-org/GLM-5.2";
 // The control channel executes arbitrary wallet verbs from files in this
 // directory, so it defaults under the pi-402 data directory rather than a
 // world-writable /tmp, where anyone on the machine could pre-create it and

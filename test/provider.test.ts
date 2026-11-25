@@ -186,7 +186,7 @@ test("upstreamExtraBody turns off Venice's system prompt for Venice models only"
 		venice_parameters: { include_venice_system_prompt: false },
 	});
 
-	for (const baseten of ["kimi-k3", "kimi-k3.1-pro", "glm-4.7", "deepseek-v4-flash"]) {
+	for (const baseten of ["kimi-k3", "kimi-k3.1-pro", "glm-5.2", "glm-5.3-flash", "deepseek-v4-flash"]) {
 		assert.deepEqual(upstreamExtraBody(baseten), {}, baseten);
 	}
 });

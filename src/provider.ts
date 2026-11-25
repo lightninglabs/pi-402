@@ -80,9 +80,9 @@ export interface StreamDeps {
 // slugs sent on the wire.
 const BASETEN_MODEL_SLUGS: Record<string, string> = {
 	"deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash-0731",
-	"glm-4.7": "zai-org/GLM-4.7",
-	"glm-5": "zai-org/GLM-5",
 	"glm-5.2": "zai-org/GLM-5.2",
+	"glm-5.3": "zai-org/GLM-5.3",
+	"glm-5.3-flash": "zai-org/GLM-5.3-Flash",
 	"kimi-k3": "moonshotai/Kimi-K3",
 	"kimi-k3.1-pro": "moonshotai/Kimi-K3.1-Pro",
 };

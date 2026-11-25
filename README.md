@@ -100,8 +100,9 @@ Select a paid model and prompt:
 ```
 /model pi402/kimi-k3           # 1M context, natively multimodal
 /model pi402/kimi-k3.1-pro     # 1M context, cheaper than K3 upstream
-/model pi402/glm-4.7           # 200K context
 /model pi402/glm-5.2           # 200K context
+/model pi402/glm-5.3           # 1M context
+/model pi402/glm-5.3-flash     # 1M context, a cheap one
 /model pi402/deepseek-v4-flash # 1M context, the cheap one
 ```
 

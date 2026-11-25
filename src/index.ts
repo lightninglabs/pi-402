@@ -260,9 +260,8 @@ export default function (pi: ExtensionAPI): void {
 			},
 			{
 				// Maps to deepseek-ai/DeepSeek-V4-Flash-0731 on the wire.
-				// The budget option: its bundle quotes at roughly half a
-				// GLM-4.7 bundle, so it is also the cheapest way to
-				// exercise the paid path end to end.
+				// The budget option: one of the cheapest bundles, so it is
+				// also the cheapest way to exercise the paid path end to end.
 				id: "deepseek-v4-flash",
 				name: "DeepSeek V4 Flash (L402)",
 				input: ["text"],
@@ -273,18 +272,7 @@ export default function (pi: ExtensionAPI): void {
 			},
 			{
 				// The Pi-facing id is slash-free; the provider maps it to
-				// the Baseten Model APIs slug (zai-org/GLM-4.7) on the wire.
-				id: "glm-4.7",
-				name: "GLM 4.7 (L402)",
-				input: ["text"],
-				reasoning: true,
-				// Cost is metered in sats at the proxy, not billed per token here.
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 200_000,
-				maxTokens: 8_192,
-			},
-			{
-				// Maps to zai-org/GLM-5.2 on the wire.
+				// the Baseten Model APIs slug (zai-org/GLM-5.2) on the wire.
 				id: "glm-5.2",
 				name: "GLM 5.2 (L402)",
 				input: ["text"],
@@ -292,6 +280,29 @@ export default function (pi: ExtensionAPI): void {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 200_000,
 				maxTokens: 8_192,
+			},
+			{
+				// Maps to zai-org/GLM-5.3 on the wire. Same upstream list
+				// price as GLM 5.2 on Baseten, 1M-token context.
+				id: "glm-5.3",
+				name: "GLM 5.3 (L402)",
+				input: ["text"],
+				reasoning: true,
+				// Cost is metered in sats at the proxy, not billed per token here.
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 32_768,
+			},
+			{
+				// Maps to zai-org/GLM-5.3-Flash on the wire. A budget model
+				// in the same price range as DeepSeek V4 Flash.
+				id: "glm-5.3-flash",
+				name: "GLM 5.3 Flash (L402)",
+				input: ["text"],
+				reasoning: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 32_768,
 			},
 			{
 				// Maps to moonshotai/Kimi-K3 on the wire. Natively
