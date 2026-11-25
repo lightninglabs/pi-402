@@ -105,8 +105,17 @@ Select a paid model and prompt:
 /model pi402/deepseek-v4-flash # 1M context, the cheap one
 ```
 
-These are the models the extension registers. What a given seller actually serves
-is up to the seller.
+These are the built-in models. A seller can publish its own menu in its rate
+file (`<origin>/pi402.json`, the file the bundle bar reads): each key of
+`models` is the model id sent on the wire, with optional `name`, `input`
+(`["text", "image"]`), `reasoning`, `contextTokens` and `maxTokens`. Pi
+refreshes the menu at startup and when the model picker opens, so a model the
+seller adds shows up without a pi-402 release. A model the built-in list knows
+keeps its id (`deepseek-ai/DeepSeek-V4-Flash-0731` stays
+`pi402/deepseek-v4-flash`); any other id is its slug's tail, lowercased
+(`zai-org/GLM-5.3-Flash` becomes `pi402/glm-5.3-flash`). The last menu is
+cached under the data directory, and a seller without one keeps the built-in
+list.
 
 Wallet commands:
 

@@ -26,6 +26,11 @@ export interface StreamDeps {
 	payer: InvoicePayer;
 	policy: BuyerPolicy;
 
+	// wireModelId resolves a Pi-facing model id to the id sent to the seller.
+	// The extension passes one backed by the seller's model menu; without it
+	// the built-in mapping is used.
+	wireModelId?: (id: string) => string;
+
 	// tokenStore holds paid L402 tokens. A durable store means paid bundles
 	// survive process restarts; when absent, tokens live in memory and die
 	// with the process.
@@ -172,7 +177,8 @@ export function makeStreamSimple(deps: StreamDeps) {
 			let reported = false;
 			let promptEstimate = 0;
 			let completionChars = 0;
-			const wireModel = wireModelId(model.id);
+			const resolveWire = deps.wireModelId ?? wireModelId;
+			const wireModel = resolveWire(model.id);
 			const progress = (): void => {
 				try {
 					deps.onProgress?.(wireModel, promptEstimate, estimateTokens(completionChars), handle);
@@ -200,7 +206,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 				const receiptLog = deps.receiptLog;
 				const receiptCache = receiptLog
 					? {
-							store: (receipt: ClientReceipt) => receiptLog.store({ ...receipt, model: wireModelId(model.id) }),
+							store: (receipt: ClientReceipt) => receiptLog.store({ ...receipt, model: wireModel }),
 						}
 					: undefined;
 
