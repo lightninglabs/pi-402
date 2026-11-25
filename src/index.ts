@@ -109,7 +109,13 @@ export default function (pi: ExtensionAPI): void {
 	// settle persists a response's debit, then drops its projection and
 	// redraws from the persisted estimate. Dropping only after the debit
 	// lands keeps the bar from counting the response twice or not at all.
-	const settle = (stream: object, model: string, promptTokens: number, completionTokens: number): void => {
+	const settle = (
+		stream: object,
+		model: string,
+		promptTokens: number,
+		completionTokens: number,
+		cachedTokens = 0,
+	): void => {
 		const done = (): void => {
 			live.drop(stream);
 			void refreshBundle().catch(() => {});
@@ -118,7 +124,7 @@ export default function (pi: ExtensionAPI): void {
 			done();
 			return;
 		}
-		void tracker.debit(model, promptTokens, completionTokens).then(done, done);
+		void tracker.debit(model, promptTokens, completionTokens, cachedTokens).then(done, done);
 	};
 
 	// readBalance reads the spendable balance and remembers what is pending,
@@ -335,8 +341,8 @@ export default function (pi: ExtensionAPI): void {
 			},
 			// The exact usage replaces the projection: the bar lands on the
 			// real figure, which may differ a little from the last estimate.
-			onUsage: (model, promptTokens, completionTokens, stream) => {
-				settle(stream, model, promptTokens, completionTokens);
+			onUsage: (model, promptTokens, completionTokens, stream, cachedTokens) => {
+				settle(stream, model, promptTokens, completionTokens, cachedTokens);
 			},
 			onStreamEnd: (model, stream, outcome) => {
 				// A response that was never accepted debits nothing. One that

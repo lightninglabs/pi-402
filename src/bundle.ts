@@ -18,11 +18,14 @@ export const RATES_TIMEOUT_MS = 3_000;
 const MS_PER_DAY = 86_400_000;
 
 // ModelRate is one model's entry of the rate file, with the file's bundle
-// lifetime folded in.
+// lifetime folded in. cachedInputUsdPerMtok is optional: a seller that debits
+// cached prompt tokens at a discount (aperture's cachedinputpermille)
+// publishes the cached rate, and without it a cached token costs a fresh one.
 export interface ModelRate {
 	bundleTokens: number;
 	inputUsdPerMtok: number;
 	outputUsdPerMtok: number;
+	cachedInputUsdPerMtok?: number;
 	validDays: number;
 }
 
@@ -50,25 +53,39 @@ export function parseModelRate(body: unknown, model: string): ModelRate | undefi
 		}
 	}
 
-	return {
+	const rate: ModelRate = {
 		bundleTokens: bundleTokens as number,
 		inputUsdPerMtok: inputUsdPerMtok as number,
 		outputUsdPerMtok: outputUsdPerMtok as number,
 		validDays: validDays as number,
 	};
+
+	// A cached rate is used only when it is a real discount: positive and no
+	// more than the input rate. Anything else is ignored rather than failing
+	// the entry, so the bar falls back to charging cached tokens in full.
+	const cached = entry.cachedInputUsdPerMtok;
+	if (typeof cached === "number" && Number.isFinite(cached) && cached > 0 && cached <= rate.inputUsdPerMtok) {
+		rate.cachedInputUsdPerMtok = cached;
+	}
+	return rate;
 }
+
+// DebitRate is what a debit needs from a rate: the two directions and, when
+// the seller publishes one, the cached input rate.
+type DebitRate = Pick<ModelRate, "inputUsdPerMtok" | "outputUsdPerMtok" | "cachedInputUsdPerMtok">;
 
 // debitTokens is the bundle tokens one response costs the seller's meter:
 // ceil(2 * (prompt * inRate + completion * outRate) / (inRate + outRate)).
-// Only the ratio of the two rates matters. Reasoning tokens are part of the
-// completion count.
-export function debitTokens(
-	rate: Pick<ModelRate, "inputUsdPerMtok" | "outputUsdPerMtok">,
-	promptTokens: number,
-	completionTokens: number,
-): number {
+// Only the ratio of the rates matters. Reasoning tokens are part of the
+// completion count. cachedTokens is the part of the prompt the upstream served
+// from its cache (usage.prompt_tokens_details.cached_tokens); when the seller
+// publishes a cached rate, those tokens are charged at it instead of inRate,
+// as aperture's meter does. The count is clamped to the prompt.
+export function debitTokens(rate: DebitRate, promptTokens: number, completionTokens: number, cachedTokens = 0): number {
 	const { inputUsdPerMtok: inRate, outputUsdPerMtok: outRate } = rate;
-	return Math.ceil((2 * (promptTokens * inRate + completionTokens * outRate)) / (inRate + outRate));
+	const cached = Math.min(Math.max(cachedTokens, 0), Math.max(promptTokens, 0));
+	const discount = rate.cachedInputUsdPerMtok === undefined ? 0 : cached * (inRate - rate.cachedInputUsdPerMtok);
+	return Math.ceil((2 * (promptTokens * inRate - discount + completionTokens * outRate)) / (inRate + outRate));
 }
 
 // BundleState is the persisted estimate for one seller and model. It keeps
@@ -81,6 +98,7 @@ export interface BundleState {
 	validDays: number;
 	inputUsdPerMtok: number;
 	outputUsdPerMtok: number;
+	cachedInputUsdPerMtok?: number;
 }
 
 // startBundle is the state of a freshly bought bundle: full, and started now.
@@ -93,12 +111,18 @@ export function startBundle(model: string, rate: ModelRate, now: number): Bundle
 		validDays: rate.validDays,
 		inputUsdPerMtok: rate.inputUsdPerMtok,
 		outputUsdPerMtok: rate.outputUsdPerMtok,
+		...(rate.cachedInputUsdPerMtok === undefined ? {} : { cachedInputUsdPerMtok: rate.cachedInputUsdPerMtok }),
 	};
 }
 
 // applyUsage debits one response from the estimate, never below zero.
-export function applyUsage(state: BundleState, promptTokens: number, completionTokens: number): BundleState {
-	const cost = debitTokens(state, promptTokens, completionTokens);
+export function applyUsage(
+	state: BundleState,
+	promptTokens: number,
+	completionTokens: number,
+	cachedTokens = 0,
+): BundleState {
+	const cost = debitTokens(state, promptTokens, completionTokens, cachedTokens);
 	return { ...state, remaining: Math.max(0, state.remaining - cost) };
 }
 
@@ -390,12 +414,12 @@ export class BundleTracker {
 	}
 
 	// debit subtracts one response's usage from the model's bundle, if one is
-	// tracked and unexpired.
-	debit(model: string, promptTokens: number, completionTokens: number): Promise<void> {
+	// tracked and unexpired. cachedTokens is the cached part of the prompt.
+	debit(model: string, promptTokens: number, completionTokens: number, cachedTokens = 0): Promise<void> {
 		return this.serialize(async () => {
 			const state = await this.store.get(this.key(model));
 			if (state && !isBundleExpired(state, this.now())) {
-				await this.store.put(this.key(model), applyUsage(state, promptTokens, completionTokens));
+				await this.store.put(this.key(model), applyUsage(state, promptTokens, completionTokens, cachedTokens));
 			}
 		}).then(() => undefined);
 	}

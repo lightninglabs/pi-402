@@ -89,6 +89,54 @@ test("debitTokens rounds up to the next whole token", () => {
 	assert.equal(debitTokens(rate, 0, 0), 0);
 });
 
+test("parseModelRate reads a seller's cached input rate when it is a real discount", () => {
+	const withCached = (cached: unknown) => ({
+		...rateFile,
+		models: { [MODEL]: { ...rateFile.models[MODEL], cachedInputUsdPerMtok: cached } },
+	});
+	assert.deepEqual(parseModelRate(withCached(0.0375), MODEL), {
+		bundleTokens: 500_000,
+		inputUsdPerMtok: 0.375,
+		outputUsdPerMtok: 1.5,
+		cachedInputUsdPerMtok: 0.0375,
+		validDays: 30,
+	});
+
+	// Equal to the input rate is allowed: no discount, but not wrong.
+	assert.equal(parseModelRate(withCached(0.375), MODEL)?.cachedInputUsdPerMtok, 0.375);
+
+	// Anything else is ignored, and the entry still parses.
+	for (const bad of [0, -0.1, 0.5, Number.NaN, "0.03", null]) {
+		const rate = parseModelRate(withCached(bad), MODEL);
+		assert.ok(rate, `entry with cachedInputUsdPerMtok=${String(bad)} still parses`);
+		assert.equal(rate.cachedInputUsdPerMtok, undefined);
+	}
+});
+
+test("debitTokens charges cached prompt tokens at the cached rate", () => {
+	const rate = { inputUsdPerMtok: 1, outputUsdPerMtok: 1, cachedInputUsdPerMtok: 0.1 };
+
+	// 100 fresh at 1 plus 900 cached at 0.1 is worth 190 fresh tokens; at
+	// equal input and output rates that is 190 bundle tokens.
+	assert.equal(debitTokens(rate, 1_000, 0, 900), 190);
+	assert.equal(debitTokens(rate, 1_000, 50, 900), 240);
+
+	// No cached tokens, or no cached rate, is today's debit.
+	assert.equal(debitTokens(rate, 1_000, 50), 1_050);
+	assert.equal(debitTokens({ inputUsdPerMtok: 1, outputUsdPerMtok: 1 }, 1_000, 50, 900), 1_050);
+
+	// The cached count is clamped to the prompt, and a negative one is zero.
+	assert.equal(debitTokens(rate, 1_000, 0, 5_000), 100);
+	assert.equal(debitTokens(rate, 1_000, 0, -10), 1_000);
+
+	// Uneven rates: input 1, output 4, cached 0.25. 600 fresh + 400 cached
+	// is worth 600 + 100 = 700 input tokens, ceil(2 * 700 / 5) = 280.
+	assert.equal(
+		debitTokens({ inputUsdPerMtok: 1, outputUsdPerMtok: 4, cachedInputUsdPerMtok: 0.25 }, 1_000, 0, 400),
+		280,
+	);
+});
+
 test("formatBar at the boundaries", () => {
 	assert.equal(formatBar(500_000, 500_000), "▰▰▰▰▰ ~500k/500k tok");
 	assert.equal(formatBar(310_000, 500_000), "▰▰▰▱▱ ~310k/500k tok");
@@ -194,6 +242,31 @@ test("a restart keeps the estimate, and an expired bundle shows nothing", async 
 	assert.equal((await second.current(MODEL))?.remaining, 496_800);
 });
 
+test("a seller's cached rate is kept with the estimate and survives a restart", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi402-bundle-"));
+	const path = join(dir, "bundles.json");
+	const cachedFile = {
+		...rateFile,
+		models: { [MODEL]: { ...rateFile.models[MODEL], cachedInputUsdPerMtok: 0.0375 } },
+	};
+	const first = new BundleTracker("https://s.example", new FileBundleStore(path), (async () =>
+		jsonResponse(cachedFile)) as typeof fetch);
+	await first.start(MODEL);
+
+	// 2,000 prompt tokens, 1,800 of them cached, and 500 completion tokens:
+	// 200 * 0.375 + 1,800 * 0.0375 + 500 * 1.5 = 892.5, so the debit is
+	// ceil(2 * 892.5 / 1.875) = 952 instead of 1,600.
+	await first.debit(MODEL, 2_000, 500, 1_800);
+	assert.equal((await first.current(MODEL))?.remaining, 499_048);
+
+	const offline = (async () => {
+		throw new Error("offline");
+	}) as typeof fetch;
+	const second = new BundleTracker("https://s.example", new FileBundleStore(path), offline);
+	await second.debit(MODEL, 2_000, 500, 1_800);
+	assert.equal((await second.current(MODEL))?.remaining, 498_096);
+});
+
 test("a new payment resets the estimate to full", async () => {
 	const fetchFn = (async () => jsonResponse(rateFile)) as typeof fetch;
 	const tracker = new BundleTracker("https://s.example", new MemoryBundleStore(), fetchFn);
@@ -264,25 +337,28 @@ test("a failed fetch shows no bar, drops a replaced estimate, and is retried", a
 	assert.equal(calls, 3);
 });
 
-test("the provider reports usage for a response that carries it", async () => {
+// streamUsage runs one response through the provider against a local SSE
+// upstream whose final chunk carries the given usage, and returns what
+// onUsage was called with.
+async function streamUsage(usage: object): Promise<{ requests: string[]; usages: unknown[][] }> {
 	const server = createServer((_req, res) => {
 		res.writeHead(200, { "content-type": "text/event-stream" });
 		const chunk = (c: object) => res.write(`data: ${JSON.stringify(c)}\n\n`);
 		chunk({ id: "1", choices: [{ index: 0, delta: { content: "hi" } }] });
 		chunk({ id: "1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
-		chunk({ id: "1", choices: [], usage: { prompt_tokens: 2_000, completion_tokens: 500, total_tokens: 2_500 } });
+		chunk({ id: "1", choices: [], usage });
 		res.end("data: [DONE]\n\n");
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const port = (server.address() as { port: number }).port;
 
 	const requests: string[] = [];
-	const usages: [string, number, number][] = [];
+	const usages: unknown[][] = [];
 	const streamSimple = makeStreamSimple({
 		payer: new MockInvoicePayer(),
 		policy: { assertCanPay: async () => {} } as never,
 		onRequest: (model) => requests.push(model),
-		onUsage: (model, p, c) => usages.push([model, p, c]),
+		onUsage: (model, p, c, _stream, cached) => usages.push([model, p, c, cached]),
 	});
 	const model = {
 		id: MODEL,
@@ -300,7 +376,25 @@ test("the provider reports usage for a response that carries it", async () => {
 	} finally {
 		server.close();
 	}
+	return { requests, usages };
+}
 
+test("the provider reports usage for a response that carries it", async () => {
+	const { requests, usages } = await streamUsage({
+		prompt_tokens: 2_000,
+		completion_tokens: 500,
+		total_tokens: 2_500,
+	});
 	assert.deepEqual(requests, [MODEL]);
-	assert.deepEqual(usages, [[MODEL, 2_000, 500]]);
+	assert.deepEqual(usages, [[MODEL, 2_000, 500, 0]]);
+});
+
+test("the provider reports the cached part of the prompt", async () => {
+	const { usages } = await streamUsage({
+		prompt_tokens: 11_632,
+		completion_tokens: 7,
+		total_tokens: 11_639,
+		prompt_tokens_details: { cached_tokens: 11_520 },
+	});
+	assert.deepEqual(usages, [[MODEL, 11_632, 7, 11_520]]);
 });

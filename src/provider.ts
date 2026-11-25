@@ -48,8 +48,16 @@ export interface StreamDeps {
 	// onUsage runs once per response that reported usage, with the wire model
 	// id and the prompt and completion token counts (reasoning included).
 	// Failures in it never reach the response. The stream handle is the same
-	// one onProgress received for this response.
-	onUsage?: (model: string, promptTokens: number, completionTokens: number, stream: object) => void;
+	// one onProgress received for this response. cachedTokens is the part of
+	// the prompt the upstream served from its cache
+	// (usage.prompt_tokens_details.cached_tokens), 0 when it reports none.
+	onUsage?: (
+		model: string,
+		promptTokens: number,
+		completionTokens: number,
+		stream: object,
+		cachedTokens: number,
+	) => void;
 
 	// onProgress runs as a response streams, once at the start and then per
 	// delta, with running estimates: the prompt from the request body size and
@@ -286,6 +294,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 				const blocks = new BlockWriter(output, stream);
 
 				let sawUsage = false;
+				let cachedTokens = 0;
 				for await (const chunk of sse) {
 					const choice = chunk.choices[0];
 					const delta = choice?.delta as OpenAiDelta | undefined;
@@ -331,6 +340,11 @@ export function makeStreamSimple(deps: StreamDeps) {
 						if (typeof reasoning === "number") {
 							output.usage.reasoning = reasoning;
 						}
+
+						// The seller may debit cached prompt tokens at a
+						// discount, so the bar needs the cached count too.
+						const cached = chunk.usage.prompt_tokens_details?.cached_tokens;
+						cachedTokens = typeof cached === "number" && Number.isFinite(cached) ? cached : 0;
 					}
 				}
 
@@ -341,7 +355,7 @@ export function makeStreamSimple(deps: StreamDeps) {
 				if (sawUsage) {
 					reported = true;
 					try {
-						deps.onUsage?.(wireModel, output.usage.input, output.usage.output, handle);
+						deps.onUsage?.(wireModel, output.usage.input, output.usage.output, handle, cachedTokens);
 					} catch {
 						// The bar is a convenience.
 					}
